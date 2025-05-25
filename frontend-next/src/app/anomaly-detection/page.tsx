@@ -106,45 +106,48 @@ export default function AnomalyDetection() {
     if (activeTab === "training" && loading) {
       eventSource = new EventSource('/api/anomaly-detection/progress');
       
-      eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        setProgress(data.progress);
-        setProgressMessage(data.message);
-        
-        // When progress reaches 100%, set modelTrained to true and close the connection
-        if (data.progress === 100) {
-          console.log("Training completed via SSE, updating modelTrained state");
-          setModelTrained(true); // Enable the "Next: Evaluate Model" button
-          setLoading(false); // Stop the loading state
+        eventSource.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          setProgress(data.progress);
+          setProgressMessage(data.message);
           
-          // Show success toast
-          toast({
-            title: "Model trained successfully",
-            description: "Your model has been trained and is ready for evaluation.",
-          });
+          // Log when backend starts evaluation phase (at 70%)
+          if (data.progress === 70) {
+            console.log("Model trained, now evaluating via SSE");
+          }
           
-          // Automatically fetch evaluation data
-          fetch('/api/anomaly-detection/evaluate-model')
-            .then(res => res.json())
-            .then(data => {
-              if (data.success) {
-                setEvaluation({
-                  metrics: data.metrics,
-                  visualizations: data.visualizations
-                });
-                console.log("Evaluation data loaded automatically");
-              }
-            })
-            .catch(error => {
-              console.error("Error fetching evaluation data:", error);
-            });
+          // At 90% or above, consider the model as trained even if connection drops
+          if (data.progress >= 90) {
+            console.log(`Progress at ${data.progress}% - Model considered trained`);
+            setModelTrained(true); // Enable the "Next: Evaluate Model" button
+          }
           
-          eventSource?.close();
-        }
-      };
+          // When progress reaches 100%, both training and evaluation are complete
+          if (data.progress === 100) {
+            console.log("Training and evaluation completed via SSE, updating modelTrained state");
+            setModelTrained(true); // Enable the "Next: Evaluate Model" button
+            setLoading(false); // Stop the loading state
+            
+            // Retrieve evaluation results that were generated during training
+            fetchEvaluationResults();
+          }
+        };
       
       eventSource.onerror = (error) => {
         console.error("SSE connection error:", error);
+        
+        // If we were at or past the evaluation phase (progress >= 70%), assume model was trained
+        if (progress >= 70) {
+          console.log("SSE connection dropped during/after evaluation, considering model as trained");
+          setModelTrained(true);
+          setLoading(false);
+          
+          // Attempt to fetch evaluation results after a brief delay
+          setTimeout(() => {
+            fetchEvaluationResults();
+          }, 1000);
+        }
+        
         eventSource?.close();
       };
     }
@@ -156,6 +159,37 @@ export default function AnomalyDetection() {
     };
   }, [activeTab, loading, toast]);
 
+  // Function to fetch evaluation results
+  const fetchEvaluationResults = () => {
+    fetch('/api/anomaly-detection/evaluate-model')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setEvaluation({
+            metrics: data.metrics,
+            visualizations: data.visualizations
+          });
+          console.log("Evaluation data retrieved from server");
+          
+          // Show success toast with evaluation information
+          toast({
+            title: "Model trained and evaluated successfully",
+            description: data.metrics?.anomaly_count 
+              ? `${data.metrics.anomaly_count} anomalies detected (${data.metrics.anomaly_percentage.toFixed(2)}%)`
+              : "Model trained successfully",
+          });
+        }
+      })
+      .catch(error => {
+        console.error("Error retrieving evaluation data:", error);
+        // Still show a success toast even if evaluation retrieval fails
+        toast({
+          title: "Model trained successfully",
+          description: "Your model has been trained but there was an issue retrieving evaluation data.",
+        });
+      });
+  };
+  
   // Function to handle file upload
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -467,7 +501,7 @@ export default function AnomalyDetection() {
       }
       
       // Wait for the model to finish training (progress will be updated via SSE)
-      // The evaluate model endpoint will be called after training is complete
+      // Evaluation will be performed automatically as part of the SSE process
       await new Promise(resolve => {
         const checkStatus = () => {
           if (progress === 100) {
@@ -479,27 +513,15 @@ export default function AnomalyDetection() {
         checkStatus();
       });
       
-      // Finally evaluate the model
-      const evaluateResponse = await fetch('/api/anomaly-detection/evaluate-model');
-      const evaluateData = await evaluateResponse.json();
-      
-      if (!evaluateData.success) {
-        throw new Error(evaluateData.message);
+      // No need to evaluate again, the SSE handler already did that
+      // Assuming we have evaluation data from the SSE handler
+      if (evaluation?.metrics) {
+        toast({
+          title: "Model trained successfully",
+          description: `Detected ${evaluation.metrics.anomaly_count} anomalies (${evaluation.metrics.anomaly_percentage.toFixed(2)}%)`,
+        });
       }
       
-      setModelTrained(true);
-      setEvaluation({
-        metrics: evaluateData.metrics,
-        visualizations: evaluateData.visualizations
-      });
-      
-      toast({
-        title: "Model trained successfully",
-        description: `Detected ${evaluateData.metrics.anomaly_count} anomalies (${evaluateData.metrics.anomaly_percentage.toFixed(2)}%)`,
-      });
-      
-      // Move to the next tab
-      setActiveTab("evaluation");
     } catch (error) {
       console.error("Error training model:", error);
       toast({
@@ -1114,7 +1136,12 @@ export default function AnomalyDetection() {
             {modelTrained ? "Retrain Model" : "Train Model"}
           </Button>
           <Button 
-            onClick={() => setActiveTab("evaluation")} 
+            onClick={() => {
+              // Simply switch to the evaluation tab, no need to fetch evaluation data again
+              if (modelTrained) {
+                setActiveTab("evaluation");
+              }
+            }} 
             disabled={!modelTrained}
             variant="secondary"
           >
