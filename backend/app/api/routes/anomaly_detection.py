@@ -77,48 +77,98 @@ async def progress_stream():
     
     try:
         while True:
-            current_progress = progress_reporter.progress
-            current_message = progress_reporter.message
-            current_data = {'progress': current_progress, 'message': current_message}
-            current_json = json.dumps(current_data)
-            
-            # Send update when progress changes or for 100% completion
-            if current_progress != last_progress or current_progress == 100:
-                print(f"SSE: Sending progress event: {current_progress}% - {current_message}")
+            try:
+                current_progress = progress_reporter.progress
+                current_message = progress_reporter.message
+                current_data = {'progress': current_progress, 'message': current_message}
+                current_json = json.dumps(current_data)
                 
-                # Format properly according to SSE spec with ID and retry directive
-                yield f"id: {event_id}\n"
-                yield "retry: 1000\n"
-                yield f"data: {current_json}\n\n"
-                
-                event_id += 1
-                last_progress = current_progress
-                
-                # For 100% completion, send multiple confirmations
-                if current_progress == 100:
-                    print(f"SSE: Sending 100% completion confirmation")
-                    await asyncio.sleep(0.5)
+                # Send update when progress changes or for 100% completion
+                if current_progress != last_progress or current_progress == 100:
+                    print(f"SSE: Sending progress event: {current_progress}% - {current_message}")
                     
-                    # Send extra confirmations for 100% completion
-                    for i in range(3):
-                        yield f"id: {event_id}\n"
-                        yield "retry: 1000\n"
-                        yield f"data: {current_json}\n\n"
-                        event_id += 1
-                        await asyncio.sleep(0.5)
-            else:
-                # Send keep-alive comment every few seconds to maintain connection
-                yield f": keepalive {event_id}\n\n"
+                    # Format properly according to SSE spec with ID and retry directive
+                    yield f"id: {event_id}\n"
+                    yield "retry: 1000\n"
+                    yield f"data: {current_json}\n\n"
+                    
+                    event_id += 1
+                    last_progress = current_progress
+                    
+                    # For critical progress points (70%, 90%, 100%), send multiple confirmations
+                    # to increase chances of reaching client despite connection issues
+                    if current_progress in [70, 90, 100]:
+                        print(f"SSE: Sending critical {current_progress}% confirmation")
+                        await asyncio.sleep(0.3)
+                        
+                        # Send extra confirmations for critical updates (more for 100%)
+                        repeats = 5 if current_progress == 100 else 2
+                        for i in range(repeats):
+                            try:
+                                yield f"id: {event_id}\n"
+                                yield "retry: 1000\n"
+                                yield f"data: {current_json}\n\n"
+                                event_id += 1
+                                await asyncio.sleep(0.3)
+                            except Exception as e:
+                                print(f"SSE: Error sending confirmation {i+1}/{repeats} for {current_progress}%: {str(e)}")
+                                # Continue with next attempt even if this one fails
+                                continue
+                else:
+                    # Send keep-alive comment every few seconds to maintain connection
+                    yield f": keepalive {event_id}\n\n"
+                    
+                await asyncio.sleep(0.5)
                 
-            await asyncio.sleep(0.5)
+            except ConnectionResetError as e:
+                # Handle connection reset specifically but try to continue
+                print(f"SSE: Connection reset during progress stream: {str(e)}")
+                
+                # If we were at critical progress point, try to recover
+                if current_progress in [70, 90, 100]:
+                    print(f"SSE: Connection reset at critical progress {current_progress}%, attempting recovery")
+                    
+                    # Short sleep to allow client reconnection
+                    await asyncio.sleep(1.0)
+                    
+                    # Return to the main loop to continue sending updates
+                    continue
+                else:
+                    # For non-critical points, re-raise to exit the stream
+                    raise
     except Exception as e:
         print(f"SSE: Error in progress stream: {str(e)}")
-        # Send error event
-        yield f"id: {event_id}\n"
-        yield f"event: error\n"
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        try:
+            # Send error event
+            yield f"id: {event_id}\n"
+            yield f"event: error\n"
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        except Exception:
+            # Ignore errors when trying to send the error message
+            pass
     finally:
         print("SSE: Client disconnected from progress stream")
+        
+        # If disconnection happens at 70% or above, make sure to update to 100%
+        # This ensures the backend state is consistent even if client connection was lost
+        if progress_reporter.progress >= 70:
+            current_progress = progress_reporter.progress
+            print(f"SSE: Client disconnected at {current_progress}%, ensuring final state is set")
+            
+            # Use background task to finalize progress to 100% to ensure backend state consistency
+            asyncio.create_task(finalize_progress_after_disconnect())
+
+async def finalize_progress_after_disconnect():
+    """Ensure progress reaches 100% after a client disconnect during evaluation phase."""
+    try:
+        await asyncio.sleep(1.0)  # Small delay to let any running processes complete
+        
+        # Only update if we were in the evaluation or finalization phase
+        if progress_reporter.progress >= 70 and progress_reporter.progress < 100:
+            print("SSE: Setting final progress to 100% after disconnect")
+            progress_reporter.update(100, "Model training and evaluation completed successfully")
+    except Exception as e:
+        print(f"SSE: Error in finalize_progress_after_disconnect: {str(e)}")
 
 @router.get("/progress")
 async def get_progress():
@@ -643,15 +693,25 @@ async def train_model(background_tasks: BackgroundTasks):
                 print(f"Model training completed with success={success}")
                 
                 if success:
+                    # Update progress to indicate evaluation is starting
+                    progress_reporter.update(70, "Model trained, now evaluating...")
+                    print("Progress set to 70% - Model trained, now evaluating...")
+                    await asyncio.sleep(0.5)
+                    
+                    # Perform model evaluation as part of the training process
+                    print("Executing model evaluation as part of training process...")
+                    anomaly_detection_system.evaluate_model()
+                    print("Model evaluation completed")
+                    
                     # Update to 90%
-                    progress_reporter.update(90, "Finalizing model...")
-                    print("Progress set to 90% - Finalizing model...")
+                    progress_reporter.update(90, "Finalizing model and evaluation...")
+                    print("Progress set to 90% - Finalizing model and evaluation...")
                     await asyncio.sleep(1.0)
                     
                     # Force multiple updates to 100% to ensure client receives it
                     print("CRITICAL: Setting progress to 100% with multiple attempts")
                     for i in range(5):  # Try 5 times to ensure delivery
-                        progress_reporter.update(100, "Model training completed successfully")
+                        progress_reporter.update(100, "Model training and evaluation completed successfully")
                         print(f"Progress 100% update attempt {i+1}/5")
                         await asyncio.sleep(0.7)  # Longer delay between attempts
                 else:
@@ -680,41 +740,32 @@ async def train_model(background_tasks: BackgroundTasks):
 @router.get("/evaluate-model", response_model=EvaluationResponse)
 async def evaluate_model():
     """
-    Evaluate the trained model.
+    Retrieve the evaluation results from the trained model.
+    The evaluation is performed during model training, this endpoint just returns the results.
     """
     try:
         # Redirect matplotlib output to capture visualizations
         plt.switch_backend('Agg')
         
         try:
-            if anomaly_detection_system.model is None or anomaly_detection_system.anomaly_results is None:
+            # Get previously computed evaluation results instead of recomputing
+            evaluation_results = anomaly_detection_system.get_evaluation_results()
+            
+            if not evaluation_results["success"]:
                 return EvaluationResponse(
                     success=False,
-                    message="No trained model available. Please train a model first.",
+                    message=evaluation_results["message"],
                     metrics={},
                     classification_report={},
                     confusion_matrix=[],
                     visualizations={}
                 )
             
-            # Call evaluate_model to generate visualizations and metrics
-            anomaly_detection_system.evaluate_model()
-            
-            # Prepare metrics based on algorithm type
-            metrics = {}
+            # Use the metrics from the pre-computed results
+            metrics = evaluation_results["metrics"]
             classification_report = {}
             confusion_matrix = []
             visualizations = {}
-            
-            # Count anomalies and normal instances
-            anomaly_count = (anomaly_detection_system.anomaly_results['anomaly'] == 'Yes').sum()
-            normal_count = (anomaly_detection_system.anomaly_results['anomaly'] == 'No').sum()
-            total_count = len(anomaly_detection_system.anomaly_results)
-            
-            # Basic metrics
-            metrics['anomaly_count'] = int(anomaly_count)
-            metrics['normal_count'] = int(normal_count)
-            metrics['anomaly_percentage'] = float(anomaly_count / total_count * 100)
             
             # For clustering algorithms
             if anomaly_detection_system.algorithm_name in ['K-Means', 'DBSCAN', 'Agglomerative Clustering', 'Gaussian Mixture']:
