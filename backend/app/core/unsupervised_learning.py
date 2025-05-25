@@ -493,7 +493,11 @@ class UnsupervisedModelTrainer:
         """
         if self.model is None or self.X_transformed is None:
             print("Please train a model first.")
-            return
+            return False
+            
+        # Initialize metrics storage if not already present
+        if not hasattr(self, 'evaluation_metrics'):
+            self.evaluation_metrics = {}
             
         # Different metrics based on algorithm type
         if self.algorithm_name in ['K-Means', 'DBSCAN', 'Agglomerative Clustering', 'Gaussian Mixture']:
@@ -507,14 +511,14 @@ class UnsupervisedModelTrainer:
                 # Skip evaluation if all points are in the same cluster
                 if len(set(labels)) <= 1:
                     print("All points assigned to the same cluster. Cannot calculate clustering metrics.")
-                    return
+                    return False
                 
                 # Filter out noise points for DBSCAN (-1 label)
                 if self.algorithm_name == 'DBSCAN':
                     mask = labels != -1
                     if sum(mask) <= 1:
                         print("Not enough non-noise points to calculate clustering metrics.")
-                        return
+                        return False
                     X_valid = self.X_transformed[mask]
                     labels_valid = labels[mask]
                 else:
@@ -528,27 +532,30 @@ class UnsupervisedModelTrainer:
                         print(f"Silhouette Score: {sil_score:.4f} (higher is better, range: -1 to 1)")
                         print("Interpretation: Measures how similar an object is to its own cluster compared to other clusters.")
                         print("Values near 1 indicate well-separated clusters.")
-                    except:
-                        print("Could not calculate Silhouette Score.")
+                        self.evaluation_metrics['silhouette_score'] = float(sil_score)
+                    except Exception as e:
+                        print(f"Could not calculate Silhouette Score: {str(e)}")
                         
                     try:
                         ch_score = calinski_harabasz_score(X_valid, labels_valid)
                         print(f"Calinski-Harabasz Index: {ch_score:.4f} (higher is better)")
                         print("Interpretation: Ratio of between-cluster variance to within-cluster variance.")
                         print("Higher values indicate better-defined clusters.")
-                    except:
-                        print("Could not calculate Calinski-Harabasz Index.")
+                        self.evaluation_metrics['calinski_harabasz_score'] = float(ch_score)
+                    except Exception as e:
+                        print(f"Could not calculate Calinski-Harabasz Index: {str(e)}")
                         
                     try:
                         db_score = davies_bouldin_score(X_valid, labels_valid)
                         print(f"Davies-Bouldin Index: {db_score:.4f} (lower is better)")
                         print("Interpretation: Average similarity between clusters.")
                         print("Lower values indicate better separation between clusters.")
-                    except:
-                        print("Could not calculate Davies-Bouldin Index.")
+                        self.evaluation_metrics['davies_bouldin_score'] = float(db_score)
+                    except Exception as e:
+                        print(f"Could not calculate Davies-Bouldin Index: {str(e)}")
             except Exception as e:
                 print(f"Error evaluating clustering model: {e}")
-                
+                return False
         elif self.algorithm_name in ['Isolation Forest', 'Local Outlier Factor', 'One-Class SVM']:
             # For anomaly detection algorithms
             anomaly_count = (self.anomaly_results['anomaly'] == 'Yes').sum()
@@ -557,6 +564,11 @@ class UnsupervisedModelTrainer:
             print(f"Anomaly Detection Results:")
             print(f"- Normal instances: {normal_count} ({normal_count/len(self.anomaly_results)*100:.2f}%)")
             print(f"- Anomalous instances: {anomaly_count} ({anomaly_count/len(self.anomaly_results)*100:.2f}%)")
+            
+            # Store these metrics
+            self.evaluation_metrics['anomaly_count'] = int(anomaly_count)
+            self.evaluation_metrics['normal_count'] = int(normal_count)
+            self.evaluation_metrics['anomaly_percentage'] = float(anomaly_count/len(self.anomaly_results)*100)
             
             # Visualize anomalies if we have numerical features
             if len(self.numerical_cols) >= 2:
@@ -590,7 +602,48 @@ class UnsupervisedModelTrainer:
                 plt.legend()
                 plt.tight_layout()
                 plt.show()
-
+        # Mark evaluation as completed
+        self.evaluation_completed = True
+        return True
+        
+    def get_evaluation_results(self):
+        """
+        Get the evaluation results without re-computing them.
+        Returns the metrics and success status that can be directly returned by the API.
+        """
+        # Check if we have trained a model and performed evaluation
+        if not hasattr(self, 'model') or self.model is None or not hasattr(self, 'evaluation_completed'):
+            return {
+                "success": False,
+                "message": "No evaluation results available. Please train the model first.",
+                "metrics": {},
+                "classification_report": {},
+                "confusion_matrix": [],
+                "visualizations": {}
+            }
+            
+        # Prepare the metrics
+        metrics = {}
+        if hasattr(self, 'evaluation_metrics'):
+            metrics.update(self.evaluation_metrics)
+        else:
+            # Calculate basic metrics if not already done
+            if hasattr(self, 'anomaly_results') and self.anomaly_results is not None:
+                anomaly_count = (self.anomaly_results['anomaly'] == 'Yes').sum()
+                normal_count = (self.anomaly_results['anomaly'] == 'No').sum()
+                metrics['anomaly_count'] = int(anomaly_count)
+                metrics['normal_count'] = int(normal_count)
+                metrics['anomaly_percentage'] = float(anomaly_count/len(self.anomaly_results)*100)
+        
+        # Return the results in the format expected by the API
+        return {
+            "success": True,
+            "message": "Evaluation results retrieved successfully",
+            "metrics": metrics,
+            "classification_report": {},  # The visualization endpoint will generate these
+            "confusion_matrix": [],
+            "visualizations": {}  # The visualization endpoint will generate these
+        }
     def view_anomalies(self):
         """
         View detected anomalies
