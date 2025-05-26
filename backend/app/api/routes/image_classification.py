@@ -95,21 +95,45 @@ def extract_zip_file(file_path, extract_to):
 
 def count_images_in_directory(directory):
     """
-    Count images in each subdirectory
+    Count images in each subdirectory that contains images (actual classes)
     """
     counts = {}
     total = 0
     image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']
     
-    for root, dirs, files in os.walk(directory):
-        dir_name = os.path.basename(root)
-        if root == directory:
-            continue
-            
-        image_count = sum(1 for f in files if any(f.lower().endswith(ext) for ext in image_extensions))
-        counts[dir_name] = image_count
-        total += image_count
+    # First, check if there's a main directory inside the extracted path
+    # (e.g., "dataset" directory containing class directories)
+    main_dirs = [d for d in os.listdir(directory) 
+                if os.path.isdir(os.path.join(directory, d))]
+    
+    # If there's only one directory and it contains subdirectories, it's likely the main directory
+    main_dir_path = directory
+    if len(main_dirs) == 1:
+        potential_main_dir = os.path.join(directory, main_dirs[0])
+        sub_dirs = [d for d in os.listdir(potential_main_dir) 
+                   if os.path.isdir(os.path.join(potential_main_dir, d))]
+        if sub_dirs:  # If it contains subdirectories, use it as the main directory
+            main_dir_path = potential_main_dir
+    
+    # Get all directories within the main directory
+    all_dirs = []
+    for item in os.listdir(main_dir_path):
+        item_path = os.path.join(main_dir_path, item)
+        if os.path.isdir(item_path):
+            all_dirs.append(item_path)
+    
+    # Check each directory to see if it contains images - only directories with images are classes
+    for dir_path in all_dirs:
+        dir_name = os.path.basename(dir_path)
+        image_files = [f for f in os.listdir(dir_path) 
+                      if os.path.isfile(os.path.join(dir_path, f)) and 
+                      any(f.lower().endswith(ext) for ext in image_extensions)]
         
+        image_count = len(image_files)
+        if image_count > 0:  # Only include directories that contain images
+            counts[dir_name] = image_count
+            total += image_count
+    
     return counts, total
 
 @router.post("/set-dimensions", response_model=ImageDimensionsResponse)
@@ -169,18 +193,46 @@ async def upload_dataset(file: UploadFile = File(...), background_tasks: Backgro
         os.makedirs(extract_path, exist_ok=True)
         extract_zip_file(temp_zip_path, extract_path)
         
-        # Get the subdirectories (classes)
-        subdirs = [d for d in os.listdir(extract_path) 
-                  if os.path.isdir(os.path.join(extract_path, d))]
+        # Check if there's a main directory (e.g. "dataset") inside the extracted path
+        main_dirs = [d for d in os.listdir(extract_path) 
+                    if os.path.isdir(os.path.join(extract_path, d))]
         
-        # Count images in each class
+        main_dir_path = extract_path
+        if len(main_dirs) == 1:
+            potential_main_dir = os.path.join(extract_path, main_dirs[0])
+            sub_dirs = [d for d in os.listdir(potential_main_dir) 
+                      if os.path.isdir(os.path.join(potential_main_dir, d))]
+            if sub_dirs:  # If it contains subdirectories, use it as the main directory
+                main_dir_path = potential_main_dir
+        
+        # Count images in each class (only directories with images)
         image_counts, total_images = count_images_in_directory(extract_path)
+        
+        # Get only directories that contain images (actual classes)
+        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']
+        class_dirs = []
+        
+        if main_dir_path == extract_path:
+            for dir_name in main_dirs:
+                dir_path = os.path.join(main_dir_path, dir_name)
+                has_images = any(any(f.lower().endswith(ext) for ext in image_extensions) 
+                                for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f)))
+                if has_images:
+                    class_dirs.append(dir_name)
+        else:
+            for dir_name in os.listdir(main_dir_path):
+                dir_path = os.path.join(main_dir_path, dir_name)
+                if os.path.isdir(dir_path):
+                    has_images = any(any(f.lower().endswith(ext) for ext in image_extensions) 
+                                    for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f)))
+                    if has_images:
+                        class_dirs.append(dir_name)
         
         return DatasetUploadResponse(
             success=True,
-            message=f"Dataset uploaded and extracted successfully. Found {len(subdirs)} classes with {total_images} total images.",
-            extracted_path=extract_path,
-            classes=subdirs,
+            message=f"Dataset uploaded and extracted successfully. Found {len(class_dirs)} classes with {total_images} total images.",
+            extracted_path=main_dir_path,  # Use the main directory path
+            classes=class_dirs,
             image_counts=image_counts,
             total_images=total_images
         )
@@ -200,9 +252,31 @@ async def sample_dataset(request: SampleDatasetRequest):
         sampled_counts = {}
         total_sampled = 0
         
+        # First check if source directories contain images
+        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']
+        valid_source_dirs = []
+        valid_target_dirs = []
+        
         for i in range(len(request.source_directories)):
             source_dir = request.source_directories[i]
             target_dir = request.target_directories[i]
+            
+            # Check if the directory contains images
+            has_images = False
+            for file in os.listdir(source_dir):
+                file_path = os.path.join(source_dir, file)
+                if os.path.isfile(file_path) and any(file.lower().endswith(ext) for ext in image_extensions):
+                    has_images = True
+                    break
+            
+            if has_images:
+                valid_source_dirs.append(source_dir)
+                valid_target_dirs.append(target_dir)
+        
+        # Process only valid directories that contain images
+        for i in range(len(valid_source_dirs)):
+            source_dir = valid_source_dirs[i]
+            target_dir = valid_target_dirs[i]
             
             count = vision_app.sample_dataset(
                 source_dir,
@@ -210,12 +284,13 @@ async def sample_dataset(request: SampleDatasetRequest):
                 request.samples_per_class
             )
             
-            sampled_counts[os.path.basename(source_dir)] = count
+            dir_name = os.path.basename(source_dir)
+            sampled_counts[dir_name] = count
             total_sampled += count
         
         return SampleDatasetResponse(
             success=True,
-            message=f"Sampled {total_sampled} images across {len(request.source_directories)} classes",
+            message=f"Sampled {total_sampled} images across {len(valid_source_dirs)} classes",
             sampled_counts=sampled_counts,
             total_sampled=total_sampled
         )
@@ -232,22 +307,54 @@ async def load_dataset(data_dir: str = Form(...), categories: List[str] = Form(.
     Load the dataset from specified directory and categories
     """
     try:
-        vision_app.load_dataset(data_dir, categories)
+        # Check if the data_dir is the extracted root or the main directory
+        # We want to make sure we're using the directory that contains the class folders
+        main_dir_path = data_dir
+        
+        # Try to detect if there's a nested structure we need to navigate
+        main_dirs = [d for d in os.listdir(data_dir) 
+                    if os.path.isdir(os.path.join(data_dir, d))]
+                    
+        # If categories aren't found directly in data_dir, check if they're in a subdirectory
+        categories_found = all(c in main_dirs for c in categories)
+        
+        if not categories_found and len(main_dirs) == 1:
+            potential_main_dir = os.path.join(data_dir, main_dirs[0])
+            sub_dirs = [d for d in os.listdir(potential_main_dir) 
+                       if os.path.isdir(os.path.join(potential_main_dir, d))]
+            if all(c in sub_dirs for c in categories):
+                main_dir_path = potential_main_dir
+        
+        # Filter categories to only include directories that contain images
+        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']
+        valid_categories = []
+        
+        for category in categories:
+            category_path = os.path.join(main_dir_path, category)
+            if os.path.exists(category_path) and os.path.isdir(category_path):
+                has_images = any(any(f.lower().endswith(ext) for ext in image_extensions) 
+                                for f in os.listdir(category_path) if os.path.isfile(os.path.join(category_path, f)))
+                if has_images:
+                    valid_categories.append(category)
+        
+        # Now load the dataset from the correct directory with valid categories
+        vision_app.load_dataset(main_dir_path, valid_categories)
         
         image_counts = {}
-        for category in categories:
-            category_path = os.path.join(data_dir, category)
+        for category in valid_categories:
+            category_path = os.path.join(main_dir_path, category)
             if os.path.exists(category_path):
                 image_counts[category] = len([f for f in os.listdir(category_path) 
-                                           if os.path.isfile(os.path.join(category_path, f))])
+                                           if os.path.isfile(os.path.join(category_path, f)) and
+                                           any(f.lower().endswith(ext) for ext in image_extensions)])
         
         total_images = sum(image_counts.values())
         
         return DatasetUploadResponse(
             success=True,
-            message=f"Dataset loaded successfully. Loaded {total_images} images from {len(categories)} classes.",
-            extracted_path=data_dir,
-            classes=categories,
+            message=f"Dataset loaded successfully. Loaded {total_images} images from {len(valid_categories)} classes.",
+            extracted_path=main_dir_path,
+            classes=valid_categories,
             image_counts=image_counts,
             total_images=total_images
         )
