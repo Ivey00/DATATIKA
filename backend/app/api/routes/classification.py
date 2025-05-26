@@ -145,6 +145,9 @@ async def define_features(request: FeatureDefinitionRequest):
             item_id_column=request.item_id_column
         )
         
+        # Store datetime column for time-based visualizations
+        classification_system.datetime_column = request.datetime_column
+        
         if X is None or y is None:
             return FeatureDefinitionResponse(
                 success=False,
@@ -152,7 +155,8 @@ async def define_features(request: FeatureDefinitionRequest):
                 features=request.features,
                 target=request.target,
                 categorical_features=request.categorical_features or [],
-                numerical_features=request.numerical_features or []
+                numerical_features=request.numerical_features or [],
+                datetime_column=request.datetime_column
             )
         
         return FeatureDefinitionResponse(
@@ -162,7 +166,8 @@ async def define_features(request: FeatureDefinitionRequest):
             target=classification_system.target,
             categorical_features=classification_system.categorical_features,
             numerical_features=classification_system.numerical_features,
-            item_id_column=classification_system.item_id_column
+            item_id_column=classification_system.item_id_column,
+            datetime_column=request.datetime_column
         )
         
     except Exception as e:
@@ -172,7 +177,8 @@ async def define_features(request: FeatureDefinitionRequest):
             features=request.features,
             target=request.target,
             categorical_features=request.categorical_features or [],
-            numerical_features=request.numerical_features or []
+            numerical_features=request.numerical_features or [],
+            datetime_column=request.datetime_column
         )
 
 @router.post("/filter-by-item", response_model=ItemFilterResponse)
