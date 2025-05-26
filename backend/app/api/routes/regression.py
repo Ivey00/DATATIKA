@@ -161,9 +161,12 @@ async def define_features(request: FeatureDefinitionRequest):
             feature_columns=request.features,
             numerical_features=request.numerical_features,
             categorical_features=request.categorical_features,
-            datetime_features=[],  # Add datetime features if needed
+            datetime_features=[request.datetime_column] if request.datetime_column else [],
             machine_id_column=request.item_id_column
         )
+        
+        # Store datetime column for time-based visualizations
+        regression_system.datetime_column = request.datetime_column
         
         if regression_system.X is None or regression_system.y is None:
             return FeatureDefinitionResponse(
@@ -172,7 +175,8 @@ async def define_features(request: FeatureDefinitionRequest):
                 features=request.features,
                 target=request.target,
                 categorical_features=request.categorical_features or [],
-                numerical_features=request.numerical_features or []
+                numerical_features=request.numerical_features or [],
+                datetime_column=request.datetime_column
             )
         
         return FeatureDefinitionResponse(
@@ -182,7 +186,8 @@ async def define_features(request: FeatureDefinitionRequest):
             target=regression_system.target_name,
             categorical_features=regression_system.categorical_features,
             numerical_features=regression_system.numerical_features,
-            item_id_column=regression_system.machine_id_column
+            item_id_column=regression_system.machine_id_column,
+            datetime_column=request.datetime_column
         )
         
     except Exception as e:
@@ -192,7 +197,8 @@ async def define_features(request: FeatureDefinitionRequest):
             features=request.features,
             target=request.target,
             categorical_features=request.categorical_features or [],
-            numerical_features=request.numerical_features or []
+            numerical_features=request.numerical_features or [],
+            datetime_column=request.datetime_column
         )
 
 @router.post("/filter-by-item", response_model=ItemFilterResponse)
