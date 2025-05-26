@@ -44,7 +44,7 @@ export default function Home() {
         <div className="container px-4 mx-auto">
           <div className="max-w-3xl mx-auto text-center mb-16">
             <h1 className="text-4xl md:text-5xl font-bold mb-6 animate-fade-in">
-              <span className="text-primary">Industrial AI</span> Made Simple with <span className="text-secondary">DATATIKA</span>
+              <span className="text-primary">DATATIKA </span> <span className="text-secondary">  Model Builder </span>
             </h1>
             <p className="text-lg text-foreground mb-8 animate-fade-in" style={{ animationDelay: '0.1s' }}>
               Upload your data, select features, choose algorithms, and get accurate predictions 
