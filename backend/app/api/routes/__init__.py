@@ -3,6 +3,7 @@ from .classification import router as classification_router
 from .regression import router as regression_router
 from .time_series import router as time_series_router
 from .anomaly_detection import router as anomaly_detection_router
+from .image_classification import router as image_classification_router
 
 router = APIRouter()
 
@@ -17,3 +18,6 @@ router.include_router(time_series_router, prefix="/time-series", tags=["time-ser
 
 # Add the anomaly detection router with the anomaly-detection prefix
 router.include_router(anomaly_detection_router, prefix="/anomaly-detection", tags=["anomaly-detection"])
+
+# Add the anomaly detection router with the image-classification prefix
+router.include_router(image_classification_router, prefix="/image-classification", tags=["image-classification"])
