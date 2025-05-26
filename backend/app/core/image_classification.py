@@ -96,6 +96,8 @@ class DataManager:
         self.images = []
         self.targets = []
         
+        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']
+        
         for category in categories:
             class_index = categories.index(category)
             path = os.path.join(data_dir, category)
@@ -108,6 +110,11 @@ class DataManager:
             for img_name in os.listdir(path):
                 try:
                     img_path = os.path.join(path, img_name)
+                    
+                    # Skip if not a file or not an image
+                    if not os.path.isfile(img_path) or not any(img_name.lower().endswith(ext) for ext in image_extensions):
+                        continue
+                        
                     img_matrix = imread(img_path)
                     # Vérifier si l'image a le bon nombre de dimensions
                     if len(img_matrix.shape) != 3 and self.channels == 3:
@@ -117,11 +124,20 @@ class DataManager:
                     img_resized = resize(img_matrix, (self.img_height, self.img_width, self.channels))
                     self.flat_data.append(img_resized.flatten())
                     self.images.append(img_resized)
+                    # Ensure each image is labeled with its category name
                     self.targets.append(category)
                 except Exception as e:
                     print(f"Erreur lors du chargement de l'image {img_name}: {e}")
         
         print(f"Chargement terminé. {len(self.flat_data)} images chargées au total.")
+        
+        # Verify we have targets for each image
+        if len(self.flat_data) == 0:
+            print("Aucune image n'a été chargée!")
+        elif len(self.targets) != len(self.flat_data):
+            print(f"ATTENTION: Le nombre de cibles ({len(self.targets)}) ne correspond pas au nombre d'images ({len(self.flat_data)})!")
+        else:
+            print(f"Cibles chargées: {len(set(self.targets))} classes uniques")
 
     def prepare_data(self, test_size=0.25, random_state=42):
         """
@@ -131,17 +147,27 @@ class DataManager:
             test_size (float): Proportion des données à utiliser pour le test
             random_state (int): Graine aléatoire pour la reproductibilité
         """
+        if len(self.flat_data) == 0:
+            print("Aucune donnée à préparer. Chargez d'abord des images avec load_images().")
+            return
+            
         self.df = pd.DataFrame(self.flat_data)
         self.df['Target'] = self.targets
         
         self.X = self.df.iloc[:, :-1]
         self.y = self.df['Target']
         
+        # Ensure we have enough samples for each class
+        if len(self.df['Target'].unique()) < 2:
+            print(f"ATTENTION: Seulement {len(self.df['Target'].unique())} classe(s) trouvée(s). Au moins 2 classes sont nécessaires pour l'entraînement.")
+            return
+            
         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
-            self.X, self.y, test_size=test_size, random_state=random_state
+            self.X, self.y, test_size=test_size, random_state=random_state, stratify=self.y
         )
         
         print(f"Données préparées. Ensemble d'entraînement: {self.X_train.shape}, Ensemble de test: {self.X_test.shape}")
+        print(f"Classes dans l'ensemble d'entraînement: {self.y_train.unique()}")
 
     def visualize_pca(self, n_components=2, save_path=None):
         """
