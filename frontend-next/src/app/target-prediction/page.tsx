@@ -38,6 +38,7 @@ interface FeatureDefinition {
   categoricalFeatures: string[];
   numericalFeatures: string[];
   itemIdColumn: string | null;
+  datetimeColumn: string | null;
 }
 
 interface AlgorithmInfo {
@@ -73,7 +74,8 @@ export default function TargetPrediction() {
     target: "",
     categoricalFeatures: [],
     numericalFeatures: [],
-    itemIdColumn: null
+    itemIdColumn: null,
+    datetimeColumn: null
   });
   const [selectedAlgorithm, setSelectedAlgorithm] = useState<string>("");
   const [algorithmInfo, setAlgorithmInfo] = useState<AlgorithmInfo | null>(null);
@@ -242,7 +244,8 @@ export default function TargetPrediction() {
           target: featureDefinition.target,
           categorical_features: featureDefinition.categoricalFeatures,
           numerical_features: featureDefinition.numericalFeatures,
-          item_id_column: featureDefinition.itemIdColumn
+          item_id_column: featureDefinition.itemIdColumn,
+          datetime_column: featureDefinition.datetimeColumn
         })
       });
       
@@ -289,7 +292,9 @@ export default function TargetPrediction() {
           target: featureDefinition.target,
           categorical_features: featureDefinition.categoricalFeatures,
           numerical_features: featureDefinition.numericalFeatures,
-          item_id_column: featureDefinition.itemIdColumn
+          item_id_column: featureDefinition.itemIdColumn,
+          datetime_column: featureDefinition.datetimeColumn  // Add this line
+
         })
       });
       
@@ -670,6 +675,14 @@ export default function TargetPrediction() {
     }));
   };
   
+  // Function to handle datetime column selection
+  const handleDatetimeSelection = (column: string | null) => {
+    setFeatureDefinition(prev => ({
+      ...prev,
+      datetimeColumn: column
+    }));
+  };
+  
   // Function to handle hyperparameter change
   const handleHyperparameterChange = (param: string, value: any) => {
     setHyperparameters(prev => ({
@@ -816,6 +829,29 @@ export default function TargetPrediction() {
               </p>
             </div>
             
+            <div>
+              <Label htmlFor="datetimeColumn">Datetime Column</Label>
+              <Select 
+                value={featureDefinition.datetimeColumn || "none"} 
+                onValueChange={(val: string) => handleDatetimeSelection(val === "none" ? null : val)}
+              >
+                <SelectTrigger id="datetimeColumn" className="border-tertiary">
+                  <SelectValue placeholder="Select datetime column" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  {dataInfo.columns.map(col => (
+                    <SelectItem key={col} value={col}>
+                      {col} {dataInfo.columnInfo[col]?.suggested_type === "datetime" ? "(datetime)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-sm text-foreground/70 mt-1">
+                Column containing timestamps for time-based analysis
+              </p>
+            </div>
+            
             <Separator className="bg-tertiary/50" />
             
             <div>
@@ -914,7 +950,13 @@ export default function TargetPrediction() {
             <div className="mt-6">
               <h3 className="text-lg font-medium text-secondary">Data Visualizations</h3>
               <p className="text-sm text-foreground/70 mb-2">
-                Select a visualization type and click to generate plots. Generate one type at a time to avoid memory issues.
+                Select a visualization type and click to generate plots. 
+                {plotType === "time" && (
+                  <>
+                    <br />
+                    Time-based plots will use {featureDefinition.datetimeColumn || "[No datetime column selected]"} as the time axis.
+                  </>
+                )}
               </p>
               
               <div className="flex flex-wrap gap-2 mb-4">
@@ -944,10 +986,16 @@ export default function TargetPrediction() {
                     setPlotType("time");
                     setVisualizations({});
                   }}
+                  disabled={!featureDefinition.datetimeColumn}
                   className="border-tertiary"
                 >
                   Time-based
                 </Button>
+                {plotType === "time" && !featureDefinition.datetimeColumn && (
+                  <p className="text-sm text-foreground/70 mt-2">
+                    Please select a datetime column to enable time-based visualizations
+                  </p>
+                )}
                 
                 <Button 
                   onClick={() => {
