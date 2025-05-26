@@ -37,6 +37,7 @@ interface FeatureDefinition {
   categoricalFeatures: string[];
   numericalFeatures: string[];
   itemIdColumn: string | null;
+  datetimeColumn: string | null;
 }
 
 interface AlgorithmInfo {
@@ -74,7 +75,8 @@ export default function NumericalClassifier() {
     target: "",
     categoricalFeatures: [],
     numericalFeatures: [],
-    itemIdColumn: null
+    itemIdColumn: null,
+    datetimeColumn: null
   });
   const [selectedAlgorithm, setSelectedAlgorithm] = useState<string>("");
   const [algorithmInfo, setAlgorithmInfo] = useState<AlgorithmInfo | null>(null);
@@ -233,7 +235,8 @@ export default function NumericalClassifier() {
           target: featureDefinition.target,
           categorical_features: featureDefinition.categoricalFeatures,
           numerical_features: featureDefinition.numericalFeatures,
-          item_id_column: featureDefinition.itemIdColumn
+          item_id_column: featureDefinition.itemIdColumn,
+          datetime_column: featureDefinition.datetimeColumn
         })
       });
       
@@ -593,6 +596,14 @@ export default function NumericalClassifier() {
     }));
   };
   
+  // Function to handle datetime column selection
+  const handleDatetimeSelection = (column: string | null) => {
+    setFeatureDefinition(prev => ({
+      ...prev,
+      datetimeColumn: column
+    }));
+  };
+  
   // Function to handle hyperparameter change
   const handleHyperparameterChange = (param: string, value: any) => {
     setHyperparameters(prev => ({
@@ -736,6 +747,29 @@ export default function NumericalClassifier() {
               </Select>
               <p className="text-sm text-foreground/70 mt-1">
                 Column that identifies individual machines or items
+              </p>
+            </div>
+            
+            <div>
+              <Label htmlFor="datetimeColumn">Datetime Column (Required)</Label>
+              <Select 
+                value={featureDefinition.datetimeColumn ?? "none"} 
+                onValueChange={(val: string) => handleDatetimeSelection(val === "none" ? null : val)}
+              >
+                <SelectTrigger id="datetimeColumn" className="border-tertiary">
+                  <SelectValue placeholder="Select datetime column" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  {dataInfo.columns.map(col => (
+                    <SelectItem key={col} value={col}>
+                      {col}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-sm text-foreground/70 mt-1">
+                Column containing timestamps for time-based analysis
               </p>
             </div>
             
