@@ -2,6 +2,13 @@
  * API client for making requests to the backend
  */
 
+// If we're in the browser, use relative paths; otherwise use the base URL
+// This ensures that the API calls work in the browser context with Next.js API routes
+const isRelativePath = (endpoint: string): boolean => {
+  return endpoint.startsWith('/api/');
+};
+
+// Base URL for non-relative paths
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 interface ApiRequestOptions extends RequestInit {
@@ -45,12 +52,16 @@ export async function apiRequest<T = any>(
 
   // Add body if present
   if (body) {
-    requestOptions.body = JSON.stringify(body);
+    // Check if body is already stringified to prevent double-stringification
+    requestOptions.body = typeof body === 'string' ? body : JSON.stringify(body);
   }
 
   try {
     // Make the request
-    const response = await fetch(`${API_BASE_URL}${endpoint}`, requestOptions);
+    // Use the endpoint directly if it already starts with /api/ (for Next.js API routes)
+    // Otherwise, prepend the API_BASE_URL
+    const url = isRelativePath(endpoint) ? endpoint : `${API_BASE_URL}${endpoint}`;
+    const response = await fetch(url, requestOptions);
 
     // Handle non-JSON responses (like SSE)
     const contentType = response.headers.get('content-type');
@@ -59,17 +70,31 @@ export async function apiRequest<T = any>(
       throw new Error('SSE response should be handled with EventSource');
     }
 
-    // Parse JSON response
-    const data = await response.json();
-
-    // Check if the response was successful
+    // Check if the response was successful before parsing JSON
     if (!response.ok) {
-      throw new Error(data.message || 'API request failed');
+      // Clone the response before consuming its body to avoid "body already read" errors
+      const responseClone = response.clone();
+      
+      // Try to parse error response as JSON, but fallback to text if it fails
+      try {
+        const errorData = await response.json();
+        throw new Error(errorData.message || `API request failed with status ${response.status}`);
+      } catch (jsonError) {
+        // If JSON parsing fails, use the cloned response for text
+        const errorText = await responseClone.text();
+        throw new Error(errorText || `API request failed with status ${response.status}`);
+      }
     }
 
+    // Parse JSON response for successful requests
+    const data = await response.json();
     return data;
   } catch (error) {
     console.error('API request error:', error);
+    // Add additional context to help debug the issue
+    if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
+      console.error('Network request failed. Check if backend server is running.');
+    }
     throw error;
   }
 }
@@ -92,7 +117,8 @@ export function createEventSource(
   }
 
   // Convert body to URL parameters if present
-  let url = `${API_BASE_URL}${endpoint}`;
+  // Use relative path for browser if endpoint starts with /api/
+  let url = isRelativePath(endpoint) ? endpoint : `${API_BASE_URL}${endpoint}`;
   if (body) {
     const params = new URLSearchParams();
     Object.entries(body).forEach(([key, value]) => {
