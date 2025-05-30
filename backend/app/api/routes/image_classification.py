@@ -8,10 +8,11 @@ from datetime import datetime
 import json
 import matplotlib.pyplot as plt
 import numpy as np
-from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks, Form
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks, Form, Request
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
+import asyncio
 
 from app.core.image_classification import IndustrialVisionApp, DataManager, ModelManager
 from app.models.schema import (
@@ -31,6 +32,73 @@ router = APIRouter()
 # In a production environment, this would be handled differently
 # with a database to store session state
 vision_app = IndustrialVisionApp()
+
+# Progress tracking
+class ProgressTracker:
+    def __init__(self):
+        self.progress = 0
+        self.message = ""
+        self.error = None
+        self.is_complete = False
+        self.task_running = False
+        
+    def update(self, progress: int, message: str = ""):
+        self.progress = progress
+        self.message = message
+        if progress >= 100:
+            self.is_complete = True
+            self.task_running = False
+            
+    def set_error(self, error_msg: str):
+        self.error = error_msg
+        self.is_complete = True
+        self.task_running = False
+        
+    def start_task(self):
+        self.progress = 0
+        self.message = "Starting task..."
+        self.error = None
+        self.is_complete = False
+        self.task_running = True
+        
+    def reset(self):
+        self.__init__()
+
+progress_tracker = ProgressTracker()
+
+@router.get("/check-progress")
+async def check_progress():
+    """
+    Get current progress status
+    """
+    try:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "progress": progress_tracker.progress,
+                "message": progress_tracker.message,
+                "error": progress_tracker.error,
+                "is_complete": progress_tracker.is_complete,
+                "task_running": progress_tracker.task_running
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            }
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e)
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            }
+        )
 
 # Define Pydantic models for request/response
 class ImageDimensionsRequest(CustomBaseModel):
@@ -302,67 +370,96 @@ async def sample_dataset(request: SampleDatasetRequest):
         )
 
 @router.post("/load-dataset", response_model=DatasetUploadResponse)
-async def load_dataset(data_dir: str = Form(...), categories: List[str] = Form(...)):
+async def load_dataset(data_dir: str = Form(...), categories: List[str] = Form(...), background_tasks: BackgroundTasks = None):
     """
-    Load the dataset from specified directory and categories
+    Load the dataset from specified directory and categories with progress tracking
     """
     try:
-        # Check if the data_dir is the extracted root or the main directory
-        # We want to make sure we're using the directory that contains the class folders
-        main_dir_path = data_dir
+        # Reset and start progress tracker
+        progress_tracker.start_task()
         
-        # Try to detect if there's a nested structure we need to navigate
-        main_dirs = [d for d in os.listdir(data_dir) 
-                    if os.path.isdir(os.path.join(data_dir, d))]
-                    
-        # If categories aren't found directly in data_dir, check if they're in a subdirectory
-        categories_found = all(c in main_dirs for c in categories)
+        # Define sampled categories before async task
+        sampled_categories = [f"{cat}_sampled" for cat in categories]
         
-        if not categories_found and len(main_dirs) == 1:
-            potential_main_dir = os.path.join(data_dir, main_dirs[0])
-            sub_dirs = [d for d in os.listdir(potential_main_dir) 
-                       if os.path.isdir(os.path.join(potential_main_dir, d))]
-            if all(c in sub_dirs for c in categories):
-                main_dir_path = potential_main_dir
+        async def load_dataset_task():
+            try:
+                # Check directory structure
+                progress_tracker.update(10, "Checking directory structure...")
+                
+                main_dir_path = data_dir
+                
+                progress_tracker.update(30, "Validating sampled image files...")
+                
+                # Filter categories
+                image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']
+                valid_categories = []
+                
+                for category in sampled_categories:
+                    category_path = os.path.join(main_dir_path, category)
+                    if os.path.exists(category_path) and os.path.isdir(category_path):
+                        has_images = any(any(f.lower().endswith(ext) for ext in image_extensions) 
+                                        for f in os.listdir(category_path) if os.path.isfile(os.path.join(category_path, f)))
+                        if has_images:
+                            valid_categories.append(category)
+                
+                if not valid_categories:
+                    raise Exception("No sampled data directories found. Please run sampling first.")
+                
+                progress_tracker.update(50, "Loading sampled images...")
+                
+                # Load dataset with sampled directories
+                vision_app.load_dataset(main_dir_path, valid_categories)
+                
+                progress_tracker.update(80, "Counting images...")
+                
+                # Count images
+                image_counts = {}
+                for category in valid_categories:
+                    category_path = os.path.join(main_dir_path, category)
+                    if os.path.exists(category_path):
+                        image_counts[category] = len([f for f in os.listdir(category_path) 
+                                                   if os.path.isfile(os.path.join(category_path, f)) and
+                                                   any(f.lower().endswith(ext) for ext in image_extensions)])
+                
+                progress_tracker.update(100, "Data loading complete")
+                
+            except Exception as e:
+                progress_tracker.set_error(str(e))
+                raise e
         
-        # Filter categories to only include directories that contain images
-        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']
-        valid_categories = []
+        # Start the background task
+        background_tasks.add_task(load_dataset_task)
         
-        for category in categories:
-            category_path = os.path.join(main_dir_path, category)
-            if os.path.exists(category_path) and os.path.isdir(category_path):
-                has_images = any(any(f.lower().endswith(ext) for ext in image_extensions) 
-                                for f in os.listdir(category_path) if os.path.isfile(os.path.join(category_path, f)))
-                if has_images:
-                    valid_categories.append(category)
-        
-        # Now load the dataset from the correct directory with valid categories
-        vision_app.load_dataset(main_dir_path, valid_categories)
-        
-        image_counts = {}
-        for category in valid_categories:
-            category_path = os.path.join(main_dir_path, category)
-            if os.path.exists(category_path):
-                image_counts[category] = len([f for f in os.listdir(category_path) 
-                                           if os.path.isfile(os.path.join(category_path, f)) and
-                                           any(f.lower().endswith(ext) for ext in image_extensions)])
-        
-        total_images = sum(image_counts.values())
-        
-        return DatasetUploadResponse(
-            success=True,
-            message=f"Dataset loaded successfully. Loaded {total_images} images from {len(valid_categories)} classes.",
-            extracted_path=main_dir_path,
-            classes=valid_categories,
-            image_counts=image_counts,
-            total_images=total_images
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "message": "Data loading started. Check progress endpoint for updates.",
+                "extracted_path": data_dir,
+                "classes": sampled_categories,
+                "image_counts": {},
+                "total_images": 0
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            }
         )
         
     except Exception as e:
-        return DatasetUploadResponse(
-            success=False,
-            message=f"Error loading dataset: {str(e)}"
+        progress_tracker.set_error(str(e))
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"Error loading dataset: {str(e)}"
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            }
         )
 
 @router.get("/visualize-data", response_model=VisualizationResponse)
@@ -503,36 +600,77 @@ async def configure_model(request: HyperparameterConfigRequest):
         )
 
 @router.post("/train-model", response_model=TrainingResponse)
-async def train_model(model_name: str = Form(...)):
+async def train_model(model_name: str = Form(...), background_tasks: BackgroundTasks = None):
     """
-    Train the selected model
+    Train the selected model with progress tracking
     """
     try:
-        start_time = datetime.now()
+        # Reset and start progress tracker
+        progress_tracker.start_task()
         
-        results = vision_app.train_model(model_name)
+        async def train_model_task():
+            try:
+                start_time = datetime.now()
+                
+                # Data preparation phase
+                progress_tracker.update(10, "Preparing data for training...")
+                
+                # Model initialization
+                progress_tracker.update(30, "Initializing model...")
+                
+                # Training phase
+                progress_tracker.update(50, "Training model...")
+                results = vision_app.train_model(model_name)
+                
+                if results is None:
+                    raise Exception(f"Error training model '{model_name}'")
+                
+                # Store results for evaluation
+                vision_app.last_evaluation = results
+                
+                # Evaluation phase
+                progress_tracker.update(80, "Evaluating model performance...")
+                
+                end_time = datetime.now()
+                training_time = (end_time - start_time).total_seconds()
+                
+                progress_tracker.update(100, f"Training complete. Accuracy: {results['accuracy']:.2f}%")
+                
+            except Exception as e:
+                progress_tracker.set_error(str(e))
+                raise e
         
-        if results is None:
-            return TrainingResponse(
-                success=False,
-                message=f"Error training model '{model_name}'",
-                training_time=0.0
-            )
+        # Start the background task
+        background_tasks.add_task(train_model_task)
         
-        end_time = datetime.now()
-        training_time = (end_time - start_time).total_seconds()
-        
-        return TrainingResponse(
-            success=True,
-            message=f"Model '{model_name}' trained successfully",
-            training_time=training_time
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "message": "Model training started. Check progress endpoint for updates.",
+                "training_time": 0.0  # Will be updated during training
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            }
         )
         
     except Exception as e:
-        return TrainingResponse(
-            success=False,
-            message=f"Error training model: {str(e)}",
-            training_time=0.0
+        progress_tracker.set_error(str(e))
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"Error training model: {str(e)}",
+                "training_time": 0.0
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            }
         )
 
 @router.get("/evaluate-model", response_model=EvaluationResponse)
@@ -543,6 +681,7 @@ async def evaluate_model():
     try:
         # Redirect matplotlib output to capture visualizations
         plt.switch_backend('Agg')
+        fig = None
         
         try:
             if not vision_app.model_manager.trained_models:
@@ -566,15 +705,10 @@ async def evaluate_model():
             from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
             accuracy = accuracy_score(vision_app.data_manager.y_test, y_pred)
             
-            # Handle binary and multiclass scenarios
-            if len(np.unique(vision_app.data_manager.y_test)) == 2:
-                precision = precision_score(vision_app.data_manager.y_test, y_pred, average='binary')
-                recall = recall_score(vision_app.data_manager.y_test, y_pred, average='binary')
-                f1 = f1_score(vision_app.data_manager.y_test, y_pred, average='binary')
-            else:
-                precision = precision_score(vision_app.data_manager.y_test, y_pred, average='weighted')
-                recall = recall_score(vision_app.data_manager.y_test, y_pred, average='weighted')
-                f1 = f1_score(vision_app.data_manager.y_test, y_pred, average='weighted')
+            # Calculate metrics with weighted average for multi-class
+            precision = precision_score(vision_app.data_manager.y_test, y_pred, average='weighted')
+            recall = recall_score(vision_app.data_manager.y_test, y_pred, average='weighted')
+            f1 = f1_score(vision_app.data_manager.y_test, y_pred, average='weighted')
                 
             metrics = {
                 'accuracy': accuracy,
@@ -612,30 +746,47 @@ async def evaluate_model():
             
             cm_viz = fig_to_base64(fig)
             
-            # Get classification report
+            # Get classification report with proper labels
             report = classification_report(vision_app.data_manager.y_test, y_pred, output_dict=True)
             
-            return EvaluationResponse(
-                success=True,
-                message="Model evaluated successfully",
-                metrics=convert_to_native_types(metrics),
-                classification_report=convert_to_native_types(report),
-                confusion_matrix=convert_to_native_types(cm.tolist()),
-                visualizations={'confusion_matrix': cm_viz}
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "success": True,
+                    "message": "Model evaluated successfully",
+                    "metrics": convert_to_native_types(metrics),
+                    "classification_report": convert_to_native_types(report),
+                    "confusion_matrix": convert_to_native_types(cm.tolist()),
+                    "visualizations": {'confusion_matrix': cm_viz}
+                },
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type",
+                }
             )
             
         finally:
             # Clean up
-            plt.close('all')
+            if fig is not None:
+                plt.close(fig)
             
     except Exception as e:
-        return EvaluationResponse(
-            success=False,
-            message=f"Error evaluating model: {str(e)}",
-            metrics={},
-            classification_report={},
-            confusion_matrix=[],
-            visualizations={}
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "message": f"Error evaluating model: {str(e)}",
+                "metrics": {},
+                "classification_report": {},
+                "confusion_matrix": [],
+                "visualizations": {}
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            }
         )
 
 @router.post("/predict-image", response_model=PredictionResponse)
