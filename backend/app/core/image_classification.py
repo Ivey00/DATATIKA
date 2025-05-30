@@ -470,6 +470,7 @@ class IndustrialVisionApp:
         """
         self.data_manager = DataManager(img_width, img_height, channels)
         self.model_manager = ModelManager()
+        self.last_evaluation = None  # Store the last evaluation results
         
     def sample_dataset(self, source_dir, target_dir, num_samples=1000):
         """
@@ -550,6 +551,7 @@ class IndustrialVisionApp:
         self.model_manager.train_model(self.data_manager.X_train, self.data_manager.y_train)
         results = self.model_manager.evaluate_model(self.data_manager.X_test, self.data_manager.y_test)
         
+        self.last_evaluation = results
         return results
         
     def predict_image(self, model_name, image_path):
