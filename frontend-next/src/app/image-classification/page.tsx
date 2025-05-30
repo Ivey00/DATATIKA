@@ -61,6 +61,7 @@ export default function ImageClassification() {
   const [activeTab, setActiveTab] = useState("dimensions");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [progressMessage, setProgressMessage] = useState("");
   
   // State for each step
   const [dimensions, setDimensions] = useState<ImageDimensions>({
@@ -82,11 +83,44 @@ export default function ImageClassification() {
   const [testImage, setTestImage] = useState<File | null>(null);
   const [prediction, setPrediction] = useState<Prediction | null>(null);
   
+  // API base URL
+  const API_BASE_URL = 'http://localhost:8000';
+  
+  // Function to fetch evaluation results
+  const fetchEvaluationResults = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/image-classification/evaluate-model`);
+      const data = await response.json();
+      
+      if (data.success) {
+        setEvaluation({
+          metrics: data.metrics,
+          classificationReport: data.classification_report,
+          confusionMatrix: data.confusion_matrix,
+          visualizations: data.visualizations
+        });
+      } else {
+        toast({
+          title: "Error fetching evaluation results",
+          description: data.message,
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      console.error("Error fetching evaluation results:", error);
+      toast({
+        title: "Error fetching evaluation results",
+        description: "An unexpected error occurred",
+        variant: "destructive"
+      });
+    }
+  };
+  
   // Function to handle setting image dimensions
   const handleSetDimensions = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/image-classification/set-dimensions', {
+      const response = await fetch(`${API_BASE_URL}/api/image-classification/set-dimensions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -151,7 +185,7 @@ export default function ImageClassification() {
       formData.append('file', file);
       
       // Upload the file
-      const response = await fetch('/api/image-classification/upload-dataset', {
+      const response = await fetch(`${API_BASE_URL}/api/image-classification/upload-dataset`, {
         method: 'POST',
         body: formData
       });
@@ -198,7 +232,7 @@ export default function ImageClassification() {
   // Function to fetch available models
   const fetchAvailableModels = async () => {
     try {
-      const response = await fetch('/api/image-classification/get-models');
+      const response = await fetch(`${API_BASE_URL}/api/image-classification/get-models`);
       const data = await response.json();
       
       if (data.success) {
@@ -224,7 +258,7 @@ export default function ImageClassification() {
         `${datasetInfo.extractedPath}/${className}_sampled`
       );
       
-      const response = await fetch('/api/image-classification/sample-dataset', {
+      const response = await fetch(`${API_BASE_URL}/api/image-classification/sample-dataset`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -244,16 +278,10 @@ export default function ImageClassification() {
           totalSampled: data.total_sampled
         });
         
-        // Load the sampled dataset
-        await loadDataset(datasetInfo.extractedPath, datasetInfo.classes.map(c => `${c}_sampled`));
-        
         toast({
           title: "Dataset sampled successfully",
           description: `Sampled ${data.total_sampled} images across ${datasetInfo.classes.length} classes`,
         });
-        
-        // Move to the next tab
-        setActiveTab("visualize");
       } else {
         toast({
           title: "Error sampling dataset",
@@ -273,34 +301,121 @@ export default function ImageClassification() {
     }
   };
   
-  // Function to load dataset
-  const loadDataset = async (dataDir: string, categories: string[]) => {
+  // Function to handle data loading with polling
+  const handleLoadDataset = async () => {
+    if (!datasetInfo) return;
+    
+    setLoading(true);
+    setProgress(0);
+    setProgressMessage("Wait some minutes for load & preprocess your data...");
+    
     try {
+      // Start the data loading process
       const formData = new FormData();
-      formData.append('data_dir', dataDir);
-      categories.forEach(category => {
+      formData.append('data_dir', datasetInfo.extractedPath);
+      datasetInfo.classes.forEach(category => {
         formData.append('categories', category);
       });
       
-      const response = await fetch('/api/image-classification/load-dataset', {
+      const response = await fetch(`${API_BASE_URL}/api/image-classification/load-dataset`, {
         method: 'POST',
         body: formData
       });
       
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
       const data = await response.json();
       
       if (!data.success) {
+        throw new Error(data.message);
+      }
+      
+      // Start polling for progress
+      let retryCount = 0;
+      const maxRetries = 3;
+      let pollTimeout: NodeJS.Timeout | null = null;
+      
+      const pollProgress = async () => {
+        try {
+          const progressResponse = await fetch(`${API_BASE_URL}/api/image-classification/check-progress`, {
+            method: 'GET',
+            headers: {
+              'Accept': 'application/json',
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache'
+            }
+          });
+          
+          if (!progressResponse.ok) {
+            throw new Error(`HTTP error! status: ${progressResponse.status}`);
+          }
+          
+          const progressData = await progressResponse.json();
+          retryCount = 0; // Reset retry count on successful request
+          
+          setProgress(progressData.progress);
+          setProgressMessage(progressData.message);
+          
+          if (progressData.error) {
+            throw new Error(progressData.error);
+          }
+          
+          if (!progressData.is_complete && progressData.task_running) {
+            // Continue polling every second
+            pollTimeout = setTimeout(pollProgress, 1000);
+          } else {
+            setLoading(false);
+            
+            if (progressData.progress === 100) {
+              toast({
+                title: "Dataset loaded successfully",
+                description: "Dataset has been loaded and preprocessed",
+              });
+              
+              // Move to the next tab
+              setActiveTab("visualize");
+            }
+          }
+        } catch (error) {
+          console.error("Error checking progress:", error);
+          
+          // Retry logic
+          if (retryCount < maxRetries) {
+            retryCount++;
+            console.log(`Retrying progress check (${retryCount}/${maxRetries})...`);
+            pollTimeout = setTimeout(pollProgress, 2000); // Wait 2 seconds before retrying
+          } else {
+            setLoading(false);
         toast({
           title: "Error loading dataset",
-          description: data.message,
+              description: "Lost connection to server. The process may still be running in the background.",
           variant: "destructive"
         });
       }
+        }
+      };
       
-      return data.success;
+      // Start polling
+      pollProgress();
+      
+      // Cleanup function
+      return () => {
+        if (pollTimeout) {
+          clearTimeout(pollTimeout);
+        }
+      };
+      
     } catch (error) {
       console.error("Error loading dataset:", error);
-      return false;
+      setLoading(false);
+      
+      toast({
+        title: "Error loading dataset",
+        description: error instanceof Error ? error.message : "An unexpected error occurred",
+        variant: "destructive"
+      });
     }
   };
   
@@ -308,7 +423,7 @@ export default function ImageClassification() {
   const handleVisualizeData = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/image-classification/visualize-data');
+      const response = await fetch(`${API_BASE_URL}/api/image-classification/visualize-data`);
       const data = await response.json();
       
       if (data.success) {
@@ -346,7 +461,7 @@ export default function ImageClassification() {
     setLoading(true);
     
     try {
-      const response = await fetch('/api/image-classification/select-model', {
+      const response = await fetch(`${API_BASE_URL}/api/image-classification/select-model`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -403,7 +518,7 @@ export default function ImageClassification() {
     setLoading(true);
     
     try {
-      const response = await fetch('/api/image-classification/configure-model', {
+      const response = await fetch(`${API_BASE_URL}/api/image-classification/configure-model`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -446,60 +561,115 @@ export default function ImageClassification() {
   const handleTrainModel = async () => {
     setLoading(true);
     setProgress(0);
+    setProgressMessage("Wait some minutes to train your model...");
     
     try {
       // Prepare form data
       const formData = new FormData();
       formData.append('model_name', selectedModel);
       
-      // Train the model
-      setProgress(33);
-      const trainResponse = await fetch('/api/image-classification/train-model', {
+      // Start the training process
+      const response = await fetch(`${API_BASE_URL}/api/image-classification/train-model`, {
         method: 'POST',
         body: formData
       });
       
-      const trainData = await trainResponse.json();
+      const data = await response.json();
       
-      if (!trainData.success) {
-        throw new Error(trainData.message);
+      if (!data.success) {
+        throw new Error(data.message);
       }
       
-      setProgress(66);
+      // Set up polling for progress updates
+      let retryCount = 0;
+      const maxRetries = 3;
+      let pollTimeout: NodeJS.Timeout | null = null;
       
-      // Evaluate the model
-      const evaluateResponse = await fetch('/api/image-classification/evaluate-model');
-      const evaluateData = await evaluateResponse.json();
+      const pollProgress = async () => {
+        try {
+          const progressResponse = await fetch(`${API_BASE_URL}/api/image-classification/check-progress`, {
+            method: 'GET',
+            headers: {
+              'Accept': 'application/json',
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache'
+            }
+          });
+          
+          if (!progressResponse.ok) {
+            throw new Error(`HTTP error! status: ${progressResponse.status}`);
+          }
+          
+          const progressData = await progressResponse.json();
+          retryCount = 0; // Reset retry count on successful request
+          
+          setProgress(progressData.progress);
+          setProgressMessage(progressData.message);
+          
+          if (progressData.error) {
+            throw new Error(progressData.error);
+          }
+          
+          if (!progressData.is_complete && progressData.task_running) {
+            // Continue polling every second
+            pollTimeout = setTimeout(pollProgress, 1000);
+          } else {
+            setLoading(false);
+            
+            if (progressData.progress === 100) {
+              // Set model as trained
+              setModelTrained(true);
+              
+              toast({
+                title: "Model trained successfully",
+                description: progressData.message || "Model has been trained and evaluated",
+              });
+              
+              // Fetch evaluation results
+              await fetchEvaluationResults();
+              
+              // Move to the next tab
+              setActiveTab("evaluate");
+            }
+          }
+        } catch (error) {
+          console.error("Error checking progress:", error);
+          
+          // Retry logic
+          if (retryCount < maxRetries) {
+            retryCount++;
+            console.log(`Retrying progress check (${retryCount}/${maxRetries})...`);
+            pollTimeout = setTimeout(pollProgress, 2000); // Wait 2 seconds before retrying
+          } else {
+            setLoading(false);
+            toast({
+              title: "Error training model",
+              description: "Lost connection to server. The process may still be running in the background.",
+              variant: "destructive"
+            });
+          }
+        }
+      };
       
-      if (!evaluateData.success) {
-        throw new Error(evaluateData.message);
-      }
+      // Start polling
+      pollProgress();
       
-      setProgress(100);
-      setModelTrained(true);
-      setEvaluation({
-        metrics: evaluateData.metrics,
-        classificationReport: evaluateData.classification_report,
-        confusionMatrix: evaluateData.confusion_matrix,
-        visualizations: evaluateData.visualizations
-      });
+      // Cleanup function
+      return () => {
+        if (pollTimeout) {
+          clearTimeout(pollTimeout);
+        }
+      };
       
-      toast({
-        title: "Model trained successfully",
-        description: `Accuracy: ${(evaluateData.metrics.accuracy * 100).toFixed(2)}%`,
-      });
-      
-      // Move to the next tab
-      setActiveTab("evaluate");
     } catch (error) {
       console.error("Error training model:", error);
+      setLoading(false);
+      
       toast({
         title: "Error training model",
         description: error instanceof Error ? error.message : "An unexpected error occurred",
         variant: "destructive"
       });
-    } finally {
-      setLoading(false);
     }
   };
   
@@ -542,7 +712,7 @@ export default function ImageClassification() {
       formData.append('model_name', selectedModel);
       
       // Make prediction
-      const response = await fetch('/api/image-classification/predict-image', {
+      const response = await fetch(`${API_BASE_URL}/api/image-classification/predict-image`, {
         method: 'POST',
         body: formData
       });
@@ -768,28 +938,46 @@ export default function ImageClassification() {
               </div>
             </div>
           )}
+          
+          {loading && (
+            <div className="space-y-2">
+              <Progress value={progress} className="h-2 bg-tertiary/30" />
+              <p className="text-sm text-center text-foreground/80">
+                {progressMessage || "Processing..."}
+              </p>
         </div>
-      </CardContent>
-      <CardFooter className="flex justify-between border-t border-tertiary">
-        <Button variant="outline" onClick={() => setActiveTab("upload")} className="border-tertiary">
-          Back
-        </Button>
-        <div className="space-x-2">
+          )}
+          
+          <div className="flex space-x-4">
           <Button 
             onClick={handleSampleDataset} 
             disabled={!datasetInfo || loading}
             variant="default"
           >
             Sample Dataset
+            </Button>
+            
+            <Button 
+              onClick={handleLoadDataset} 
+              disabled={!sampledDatasetInfo || loading}
+              variant="secondary"
+            >
+              Load & Preprocess Data
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+      <CardFooter className="flex justify-between border-t border-tertiary">
+        <Button variant="outline" onClick={() => setActiveTab("upload")} className="border-tertiary">
+          Back
           </Button>
           <Button 
             onClick={() => setActiveTab("visualize")} 
-            disabled={!sampledDatasetInfo}
+          disabled={!sampledDatasetInfo || loading}
             variant="secondary"
           >
             Next: Visualize Data
           </Button>
-        </div>
       </CardFooter>
     </Card>
   );
@@ -992,9 +1180,7 @@ export default function ImageClassification() {
             <div className="space-y-2">
               <Progress value={progress} className="h-2 bg-tertiary/30" />
               <p className="text-sm text-center text-foreground/80">
-                {progress < 33 ? "Preparing data..." : 
-                 progress < 66 ? "Training model..." : 
-                 "Evaluating model..."}
+                {progressMessage || "Training..."}
               </p>
             </div>
           )}
