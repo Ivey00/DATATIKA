@@ -613,16 +613,19 @@ async def train_model(model_name: str = Form(...), background_tasks: BackgroundT
                 start_time = datetime.now()
                 
                 # Data preparation phase
-                progress_tracker.update(10, "Preparing data for training...")
+                progress_tracker.update(20, "Preparing data for training...")
+                await asyncio.sleep(0.5)  # Give time for frontend to update
                 
                 # Model initialization
-                progress_tracker.update(30, "Initializing model...")
+                progress_tracker.update(40, "Initializing model...")
+                await asyncio.sleep(0.5)  # Give time for frontend to update
                 
                 # Training phase
-                progress_tracker.update(50, "Training model...")
+                progress_tracker.update(60, "Training model...")
                 results = vision_app.train_model(model_name)
                 
                 if results is None:
+                    progress_tracker.set_error(f"Error training model '{model_name}'")
                     raise Exception(f"Error training model '{model_name}'")
                 
                 # Store results for evaluation
@@ -630,11 +633,14 @@ async def train_model(model_name: str = Form(...), background_tasks: BackgroundT
                 
                 # Evaluation phase
                 progress_tracker.update(80, "Evaluating model performance...")
+                await asyncio.sleep(0.5)  # Give time for frontend to update
+                
+                # Calculate final metrics
+                accuracy = results.get('accuracy', 0)
+                progress_tracker.update(100, f"Training complete. Accuracy: {accuracy:.2f}%")
                 
                 end_time = datetime.now()
                 training_time = (end_time - start_time).total_seconds()
-                
-                progress_tracker.update(100, f"Training complete. Accuracy: {results['accuracy']:.2f}%")
                 
             except Exception as e:
                 progress_tracker.set_error(str(e))
