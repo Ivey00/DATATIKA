@@ -307,7 +307,7 @@ export default function ImageClassification() {
     
     setLoading(true);
     setProgress(0);
-    setProgressMessage("Wait some minutes for load & preprocess your data...");
+    setProgressMessage("Starting data loading...");
     
     try {
       // Start the data loading process
@@ -561,7 +561,7 @@ export default function ImageClassification() {
   const handleTrainModel = async () => {
     setLoading(true);
     setProgress(0);
-    setProgressMessage("Wait some minutes to train your model...");
+    setProgressMessage("Starting model training...");
     
     try {
       // Prepare form data
@@ -603,22 +603,24 @@ export default function ImageClassification() {
           const progressData = await progressResponse.json();
           retryCount = 0; // Reset retry count on successful request
           
+          // Update progress state
           setProgress(progressData.progress);
-          setProgressMessage(progressData.message);
+          setProgressMessage(progressData.message || "Processing...");
           
           if (progressData.error) {
+            setLoading(false);
             throw new Error(progressData.error);
           }
           
+          // Continue polling if task is still running
           if (!progressData.is_complete && progressData.task_running) {
-            // Continue polling every second
             pollTimeout = setTimeout(pollProgress, 1000);
           } else {
-            setLoading(false);
-            
+            // Task is complete
             if (progressData.progress === 100) {
               // Set model as trained
               setModelTrained(true);
+              setLoading(false);
               
               toast({
                 title: "Model trained successfully",
@@ -630,6 +632,14 @@ export default function ImageClassification() {
               
               // Move to the next tab
               setActiveTab("evaluate");
+            } else if (!progressData.task_running) {
+              // Task stopped without completing
+              setLoading(false);
+              toast({
+                title: "Training incomplete",
+                description: "The training process stopped unexpectedly",
+                variant: "destructive"
+              });
             }
           }
         } catch (error) {
@@ -644,15 +654,15 @@ export default function ImageClassification() {
             setLoading(false);
             toast({
               title: "Error training model",
-              description: "Lost connection to server. The process may still be running in the background.",
+              description: error instanceof Error ? error.message : "Lost connection to server",
               variant: "destructive"
             });
           }
         }
       };
       
-      // Start polling
-      pollProgress();
+      // Start polling immediately
+      await pollProgress();
       
       // Cleanup function
       return () => {
@@ -940,12 +950,12 @@ export default function ImageClassification() {
           )}
           
           {loading && (
-            <div className="space-y-2">
-              <Progress value={progress} className="h-2 bg-tertiary/30" />
+            <div className="flex flex-col items-center justify-center space-y-4 py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
               <p className="text-sm text-center text-foreground/80">
-                {progressMessage || "Processing..."}
+                Please wait while we load and preprocess your data. This may take a few minutes...
               </p>
-        </div>
+            </div>
           )}
           
           <div className="flex space-x-4">
