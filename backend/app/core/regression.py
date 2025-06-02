@@ -8,7 +8,6 @@ from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
-# import shap
 import joblib
 from datetime import datetime
 from sklearn.impute import SimpleImputer
@@ -183,27 +182,6 @@ class Regression:
         # Prepare features and target
         self.X = self.data[feature_columns]
         self.y = self.data[target_column]
-
-    # def analyze_feature_importance(self, method='shap'):
-    #     """Analyze feature importance using SHAP values or other methods"""
-    #     if method == 'shap':
-    #         # Create a simple model for SHAP analysis
-    #         model = RandomForestRegressor(n_estimators=100, random_state=42)
-    #         model.fit(self.X, self.y)
-            
-    #         # Calculate SHAP values
-    #         explainer = shap.TreeExplainer(model)
-    #         shap_values = explainer.shap_values(self.X)
-            
-    #         # Plot SHAP summary
-    #         plt.figure(figsize=(10, 6))
-    #         shap.summary_plot(shap_values, self.X)
-    #         plt.title('Feature Importance (SHAP Values)')
-    #         plt.show()
-            
-    #         return shap_values
-    #     else:
-    #         raise ValueError("Currently only 'shap' method is supported")
 
     def visualize_data(self, plot_type='numerical'):
         """Visualize data based on feature types"""

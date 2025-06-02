@@ -59,12 +59,20 @@ interface Prediction {
   [key: string]: any;
 }
 
+interface ModelSaveRequest {
+  model_name: string;
+  save_directory: string;
+}
+
 // Main component
 export default function TargetPrediction() {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState("import");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [modelName, setModelName] = useState("");
+  const [saveDirectory, setSaveDirectory] = useState("");
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
   
   // State for each step
   const [dataFile, setDataFile] = useState<File | null>(null);
@@ -85,8 +93,8 @@ export default function TargetPrediction() {
   const [predictions, setPredictions] = useState<Prediction[]>([]);
   const [predictionFile, setPredictionFile] = useState<File | null>(null);
   const [visualizations, setVisualizations] = useState<Record<string, string>>({});
-  const [featureImportance, setFeatureImportance] = useState<{data: any[], visualization: string} | null>(null);
   const [plotType, setPlotType] = useState<string>("numerical");
+  const [progressMessage, setProgressMessage] = useState<string>("");
   
   // Available algorithms
   const algorithms = [
@@ -109,6 +117,61 @@ export default function TargetPrediction() {
     { value: "OrthogonalMatchingPursuit", label: "Orthogonal Matching Pursuit" },
     { value: "DummyRegressor", label: "Dummy Regressor" }
   ];
+
+  // Add fetchEvaluationResults function
+  const fetchEvaluationResults = async () => {
+    try {
+      const response = await apiRequestWithRetry('/api/target-prediction/evaluate-model');
+      
+      if (response.success) {
+        setEvaluation({
+          metrics: response.metrics,
+          visualizations: response.visualizations
+        });
+      } else {
+        toast({
+          title: "Error fetching evaluation results",
+          description: response.message,
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      console.error("Error fetching evaluation results:", error);
+      toast({
+        title: "Error fetching evaluation results",
+        description: "An unexpected error occurred",
+        variant: "destructive"
+      });
+    }
+  };
+
+  // Add retry logic for API requests
+  const apiRequestWithRetry = async (url: string, options?: RequestInit, maxRetries = 3) => {
+    let lastError;
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        const response = await fetch(url, options);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        return data;
+      } catch (error) {
+        lastError = error;
+        // Only retry on network errors or 5xx server errors
+        if (error instanceof Error && 
+            (error.message.includes('socket hang up') || 
+             error.message.includes('network') ||
+             (error as any).status >= 500)) {
+          // Exponential backoff
+          await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError;
+  };
 
   // Function to handle file upload
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -245,7 +308,7 @@ export default function TargetPrediction() {
           categorical_features: featureDefinition.categoricalFeatures,
           numerical_features: featureDefinition.numericalFeatures,
           item_id_column: featureDefinition.itemIdColumn,
-          datetime_column: featureDefinition.datetimeColumn
+          datetime_column: featureDefinition.datetimeColumn || null
         })
       });
       
@@ -280,9 +343,18 @@ export default function TargetPrediction() {
   const fetchVisualizations = async (type: string) => {
     setLoading(true);
     try {
+      // Only proceed with time-based visualizations if datetime column is selected
+      if (type === "time" && !featureDefinition.datetimeColumn) {
+        toast({
+          title: "Datetime column required",
+          description: "Please select a datetime column for time-based visualizations",
+          variant: "destructive"
+        });
+        return;
+      }
+
       // First, ensure features are defined on the backend
-      // This is needed because the visualization API requires features to be defined
-      const defineData = await apiRequest('/api/target-prediction/define-features', {
+      const defineData = await apiRequestWithRetry('/api/target-prediction/define-features', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -293,8 +365,7 @@ export default function TargetPrediction() {
           categorical_features: featureDefinition.categoricalFeatures,
           numerical_features: featureDefinition.numericalFeatures,
           item_id_column: featureDefinition.itemIdColumn,
-          datetime_column: featureDefinition.datetimeColumn  // Add this line
-
+          datetime_column: featureDefinition.datetimeColumn || null
         })
       });
       
@@ -307,8 +378,8 @@ export default function TargetPrediction() {
         return;
       }
       
-      // Now that features are defined, fetch the visualizations
-      const data = await apiRequest(`/api/target-prediction/visualize-data?plot_type=${type}`);
+      // Now fetch the visualizations with retry
+      const data = await apiRequestWithRetry(`/api/target-prediction/visualize-data?plot_type=${type}`);
       
       if (data.success) {
         setVisualizations(data.visualizations);
@@ -328,66 +399,6 @@ export default function TargetPrediction() {
       console.error("Error fetching visualizations:", error);
       toast({
         title: "Error generating visualizations",
-        description: "An unexpected error occurred",
-        variant: "destructive"
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-  
-  // Function to fetch feature importance
-  const fetchFeatureImportance = async () => {
-    setLoading(true);
-    try {
-      // First, ensure features are defined on the backend
-      // This is needed because the feature importance API requires features to be defined
-      const defineData = await apiRequest('/api/target-prediction/define-features', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          features: featureDefinition.features,
-          target: featureDefinition.target,
-          categorical_features: featureDefinition.categoricalFeatures,
-          numerical_features: featureDefinition.numericalFeatures,
-          item_id_column: featureDefinition.itemIdColumn
-        })
-      });
-      
-      if (!defineData.success) {
-        toast({
-          title: "Error defining features",
-          description: defineData.message || "Failed to define features for feature importance",
-          variant: "destructive"
-        });
-        return;
-      }
-      
-      // Now that features are defined, fetch the feature importance
-      const data = await apiRequest('/api/target-prediction/analyze-feature-importance');
-      
-      if (data.success) {
-        setFeatureImportance({
-          data: data.importance_data,
-          visualization: data.visualization
-        });
-        toast({
-          title: "Feature importance generated",
-          description: data.message || "Feature importance analysis completed successfully",
-        });
-      } else {
-        toast({
-          title: "Error generating feature importance",
-          description: data.message || "Failed to generate feature importance",
-          variant: "destructive"
-        });
-      }
-    } catch (error) {
-      console.error("Error fetching feature importance:", error);
-      toast({
-        title: "Error generating feature importance",
         description: "An unexpected error occurred",
         variant: "destructive"
       });
@@ -498,56 +509,115 @@ export default function TargetPrediction() {
   const handleModelTraining = async () => {
     setLoading(true);
     setProgress(0);
+    setProgressMessage("Starting model training...");
     
     try {
-      // First preprocess the data
-      const preprocessData = await apiRequest('/api/target-prediction/preprocess-data');
-      
-      if (!preprocessData.success) {
-        throw new Error(preprocessData.message);
-      }
-      
-      setProgress(33);
-      
-      // Then train the model
-      const trainData = await apiRequest('/api/target-prediction/train-model');
-      
-      if (!trainData.success) {
-        throw new Error(trainData.message);
-      }
-      
-      setProgress(66);
-      
-      // Finally evaluate the model
-      const evaluateData = await apiRequest('/api/target-prediction/evaluate-model');
-      
-      if (!evaluateData.success) {
-        throw new Error(evaluateData.message);
-      }
-      
-      setProgress(100);
-      setModelTrained(true);
-      setEvaluation({
-        metrics: evaluateData.metrics,
-        visualizations: evaluateData.visualizations
+      // Start the training process
+      const response = await apiRequestWithRetry('/api/target-prediction/train-model', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
       });
-      
-      toast({
-        title: "Model trained successfully",
-        description: `R² Score: ${(evaluateData.metrics.r2 * 100).toFixed(2)}%`,
-      });
-      
-      // Move to the next tab
-      setActiveTab("evaluation");
+
+      if (!response.success) {
+        throw new Error(response.message);
+      }
+
+      // Set up polling for progress updates
+      let retryCount = 0;
+      const maxRetries = 3;
+      let pollTimeout: NodeJS.Timeout | null = null;
+
+      const pollProgress = async () => {
+        try {
+          const progressData = await apiRequestWithRetry('/api/target-prediction/check-progress', {
+            method: 'GET',
+            headers: {
+              'Accept': 'application/json',
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache'
+            }
+          });
+
+          retryCount = 0; // Reset retry count on successful request
+
+          // Update progress state
+          setProgress(progressData.progress);
+          setProgressMessage(progressData.message || "Processing...");
+
+          if (progressData.error) {
+            setLoading(false);
+            throw new Error(progressData.error);
+          }
+
+          // Continue polling if task is still running
+          if (!progressData.is_complete && progressData.task_running) {
+            pollTimeout = setTimeout(pollProgress, 1000);
+          } else {
+            // Task is complete
+            if (progressData.progress === 100) {
+              setModelTrained(true);
+              setLoading(false);
+
+              toast({
+                title: "Model trained successfully",
+                description: progressData.message || "Model has been trained and evaluated",
+              });
+
+              // Fetch evaluation results
+              await fetchEvaluationResults();
+
+              // Move to the next tab
+              setActiveTab("evaluate");
+            } else if (!progressData.task_running) {
+              // Task stopped without completing
+              setLoading(false);
+              toast({
+                title: "Training incomplete",
+                description: "The training process stopped unexpectedly",
+                variant: "destructive"
+              });
+            }
+          }
+        } catch (error) {
+          console.error("Error checking progress:", error);
+
+          // Retry logic
+          if (retryCount < maxRetries) {
+            retryCount++;
+            console.log(`Retrying progress check (${retryCount}/${maxRetries})...`);
+            pollTimeout = setTimeout(pollProgress, 2000); // Wait 2 seconds before retrying
+          } else {
+            setLoading(false);
+            toast({
+              title: "Error training model",
+              description: error instanceof Error ? error.message : "Lost connection to server",
+              variant: "destructive"
+            });
+          }
+        }
+      };
+
+      // Start polling immediately
+      await pollProgress();
+
+      // Cleanup function
+      return () => {
+        if (pollTimeout) {
+          clearTimeout(pollTimeout);
+        }
+      };
+
     } catch (error) {
       console.error("Error training model:", error);
+      setLoading(false);
+
       toast({
         title: "Error training model",
         description: error instanceof Error ? error.message : "An unexpected error occurred",
         variant: "destructive"
       });
-    } finally {
-      setLoading(false);
     }
   };
   
@@ -696,6 +766,55 @@ export default function TargetPrediction() {
     if (value === null) return "None";
     if (typeof value === "boolean") return value ? "True" : "False";
     return value.toString();
+  };
+  
+  // Function to handle model saving
+  const handleSaveModel = async () => {
+    if (!modelName || !saveDirectory) {
+      toast({
+        title: "Missing information",
+        description: "Please provide both model name and save directory",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const data = await apiRequest('/api/target-prediction/save-model', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model_name: modelName,
+          save_directory: saveDirectory
+        })
+      });
+
+      if (data.success) {
+        toast({
+          title: "Model saved successfully",
+          description: `Model saved to ${data.model_path}`,
+        });
+        setShowSaveDialog(false);
+      } else {
+        toast({
+          title: "Error saving model",
+          description: data.message,
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      console.error("Error saving model:", error);
+      toast({
+        title: "Error saving model",
+        description: "An unexpected error occurred",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
   };
   
   // Function to render the data import step
@@ -915,36 +1034,6 @@ export default function TargetPrediction() {
                   );
                 })}
               </div>
-            </div>
-            
-            <div className="mt-4">
-              <h3 className="text-lg font-medium text-secondary">Feature Importance Analysis</h3>
-              <p className="text-sm text-foreground/70 mb-2">
-                Generate feature importance analysis to understand which features have the most impact on your target variable.
-              </p>
-              
-              <Button 
-                onClick={() => {
-                  setLoading(true);
-                  fetchFeatureImportance()
-                    .finally(() => setLoading(false));
-                }} 
-                disabled={loading || !featureDefinition.features.length || !featureDefinition.target}
-                variant="default"
-                className="mb-4"
-              >
-                {loading ? "Generating..." : "Generate Feature Importance"}
-              </Button>
-              
-              {featureImportance && (
-                <div className="mt-2 border border-tertiary rounded-md p-4">
-                  <img 
-                    src={`data:image/png;base64,${featureImportance.visualization}`} 
-                    alt="Feature Importance" 
-                    className="w-full"
-                  />
-                </div>
-              )}
             </div>
             
             <div className="mt-6">
@@ -1493,17 +1582,74 @@ export default function TargetPrediction() {
           </div>
         </div>
       </CardContent>
+
+      {showSaveDialog && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" />
+          <div className="fixed inset-0 flex items-center justify-center">
+            <Card className="w-[400px] border-tertiary bg-background">
+              <CardHeader>
+                <CardTitle>Save Model</CardTitle>
+                <CardDescription>
+                  Enter a name for your model and specify the save directory path
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="modelName">Model Name</Label>
+                    <Input
+                      id="modelName"
+                      value={modelName}
+                      onChange={(e) => setModelName(e.target.value)}
+                      placeholder="my_regression_model"
+                      className="border-tertiary"
+                    />
+                    <p className="text-sm text-foreground/70 mt-1">
+                      The name of your model (e.g., temperature_predictor)
+                    </p>
+                  </div>
+                  <div>
+                    <Label htmlFor="saveDirectory">Save Directory Path</Label>
+                    <Input
+                      id="saveDirectory"
+                      value={saveDirectory}
+                      onChange={(e) => setSaveDirectory(e.target.value)}
+                      placeholder="/path/to/save/directory"
+                      className="border-tertiary"
+                    />
+                    <p className="text-sm text-foreground/70 mt-1">
+                      Full path where you want to save the model (e.g., C:/Users/name/models)
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+              <CardFooter className="flex justify-end space-x-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowSaveDialog(false)}
+                  className="border-tertiary"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleSaveModel}
+                  disabled={loading || !modelName || !saveDirectory}
+                >
+                  Save Model
+                </Button>
+              </CardFooter>
+            </Card>
+          </div>
+        </div>
+      )}
+
       <CardFooter className="flex justify-between border-t border-tertiary">
         <Button variant="outline" onClick={() => setActiveTab("evaluation")} className="border-tertiary">
           Back
         </Button>
         <Button 
-          onClick={() => {
-            toast({
-              title: "Model saved",
-              description: "Model saved successfully (feature coming soon)",
-            });
-          }}
+          onClick={() => setShowSaveDialog(true)}
           variant="secondary"
         >
           Save Model

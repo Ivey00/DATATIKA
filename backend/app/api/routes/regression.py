@@ -6,11 +6,16 @@ import tempfile
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from typing import Dict, Any, List, Optional
 import json
 from io import BytesIO
 import seaborn as sns
+import aiohttp
+from aiohttp import ClientTimeout, TCPConnector
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
+import logging
 
 from app.core.regression import Regression
 from app.models.schema import (
@@ -28,7 +33,7 @@ from app.models.schema import (
     PredictionRequest, PredictionResponse,
     ComparisonRequest, ComparisonResponse,
     GridSearchRequest, GridSearchResponse,
-    ModelSaveResponse,
+    ModelSaveRequest, ModelSaveResponse,
     ErrorResponse,
     convert_to_native_types
 )
@@ -39,6 +44,67 @@ router = APIRouter()
 # In a production environment, this would be handled differently
 # with a database to store session state
 regression_system = Regression()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configure connection pooling with longer timeout
+timeout = ClientTimeout(total=7200)  # 2 hour timeout for long-running operations
+connector = aiohttp.TCPConnector(limit=10, ttl_dns_cache=300)
+session = None
+
+# Progress tracking
+class ProgressTracker:
+    def __init__(self):
+        self.progress = 0
+        self.message = ""
+        self.error = None
+        self.is_complete = False
+        self.task_running = False
+        
+    def update(self, progress: int, message: str = ""):
+        self.progress = progress
+        self.message = message
+        if progress >= 100:
+            self.is_complete = True
+            self.task_running = False
+            
+    def set_error(self, error_msg: str):
+        self.error = error_msg
+        self.is_complete = True
+        self.task_running = False
+        
+    def start_task(self):
+        self.progress = 0
+        self.message = "Starting task..."
+        self.error = None
+        self.is_complete = False
+        self.task_running = True
+        
+    def reset(self):
+        self.__init__()
+
+progress_tracker = ProgressTracker()
+
+@router.get("/check-progress")
+async def check_progress():
+    """
+    Get current progress status
+    """
+    return {
+        "progress": progress_tracker.progress,
+        "message": progress_tracker.message,
+        "error": progress_tracker.error,
+        "is_complete": progress_tracker.is_complete,
+        "task_running": progress_tracker.task_running
+    }
+
+async def get_session():
+    global session
+    if session is None:
+        session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+    return session
 
 def fig_to_base64(fig):
     """Convert a matplotlib figure to base64 encoded string."""
@@ -156,27 +222,30 @@ async def define_features(request: FeatureDefinitionRequest):
     Define the features and target for the model.
     """
     try:
+        # Handle optional datetime column properly
+        datetime_features = []
+        if request.datetime_column:
+            datetime_features = [request.datetime_column]
+        
         regression_system.set_features(
             target_column=request.target,
             feature_columns=request.features,
-            numerical_features=request.numerical_features,
-            categorical_features=request.categorical_features,
-            datetime_features=[request.datetime_column] if request.datetime_column else [],
+            numerical_features=request.numerical_features or [],
+            categorical_features=request.categorical_features or [],
+            datetime_features=datetime_features,
             machine_id_column=request.item_id_column
         )
-        
-        # Store datetime column for time-based visualizations
-        regression_system.datetime_column = request.datetime_column
         
         if regression_system.X is None or regression_system.y is None:
             return FeatureDefinitionResponse(
                 success=False,
-                message="Failed to define features and target. Please import data first.",
+                message="Failed to define features and target. Please check your data.",
                 features=request.features,
                 target=request.target,
                 categorical_features=request.categorical_features or [],
                 numerical_features=request.numerical_features or [],
-                datetime_column=request.datetime_column
+                datetime_column=request.datetime_column or "",
+                item_id_column=request.item_id_column
             )
         
         return FeatureDefinitionResponse(
@@ -186,11 +255,12 @@ async def define_features(request: FeatureDefinitionRequest):
             target=regression_system.target_name,
             categorical_features=regression_system.categorical_features,
             numerical_features=regression_system.numerical_features,
-            item_id_column=regression_system.machine_id_column,
-            datetime_column=request.datetime_column
+            datetime_column=request.datetime_column or "",
+            item_id_column=regression_system.machine_id_column
         )
         
     except Exception as e:
+        logger.error(f"Error in define_features: {str(e)}")
         return FeatureDefinitionResponse(
             success=False,
             message=f"Error defining features and target: {str(e)}",
@@ -198,7 +268,8 @@ async def define_features(request: FeatureDefinitionRequest):
             target=request.target,
             categorical_features=request.categorical_features or [],
             numerical_features=request.numerical_features or [],
-            datetime_column=request.datetime_column
+            datetime_column=request.datetime_column or "",
+            item_id_column=request.item_id_column
         )
 
 @router.post("/filter-by-item", response_model=ItemFilterResponse)
@@ -265,6 +336,21 @@ async def visualize_data(plot_type: str = "numerical", max_features: Optional[in
     Visualize the data with appropriate plots for each feature type.
     """
     try:
+        if regression_system.X is None or regression_system.y is None:
+            return VisualizationResponse(
+                success=False,
+                message="Features and target not defined. Please define features and target first.",
+                visualizations={}
+            )
+        
+        # Handle datetime visualization separately
+        if plot_type == "time" and not regression_system.datetime_features:
+            return VisualizationResponse(
+                success=False,
+                message="No datetime column defined for time-based visualization.",
+                visualizations={}
+            )
+        
         # Add a timeout for the visualization process
         from starlette.background import BackgroundTask
         
@@ -276,13 +362,6 @@ async def visualize_data(plot_type: str = "numerical", max_features: Optional[in
         plt.switch_backend('Agg')
         
         try:
-            if regression_system.X is None or regression_system.y is None:
-                return VisualizationResponse(
-                    success=False,
-                    message="Features and target not defined. Please define features and target first.",
-                    visualizations={}
-                )
-            
             # Determine which features to visualize based on plot_type
             # Allow both "numerical" and "numeric" for backward compatibility
             if plot_type.lower() in ["numerical", "numeric"]:
@@ -458,109 +537,6 @@ async def visualize_data(plot_type: str = "numerical", max_features: Optional[in
             visualizations={}
         )
 
-# @router.get("/analyze-feature-importance", response_model=FeatureImportanceResponse)
-# async def analyze_feature_importance(method: str = "shap"):
-#     """
-#     Analyze the importance of features using the specified method.
-#     """
-#     try:
-#         # Redirect matplotlib output to capture visualizations
-#         plt.switch_backend('Agg')
-        
-#         try:
-#             if regression_system.X is None or regression_system.y is None:
-#                 return FeatureImportanceResponse(
-#                     success=False,
-#                     message="Features and target not defined. Please define features and target first.",
-#                     importance_data=[],
-#                     visualization=""
-#                 )
-            
-#             # Ensure preprocessor is created
-#             if regression_system.preprocessor is None:
-#                 regression_system.preprocess_data()
-            
-#             try:
-#                 # Create a RandomForestRegressor model
-#                 from sklearn.ensemble import RandomForestRegressor
-#                 from sklearn.pipeline import Pipeline
-                
-#                 # Create a pipeline with preprocessor and model
-#                 model = RandomForestRegressor(n_estimators=100, random_state=42)
-#                 pipeline = Pipeline([
-#                     ('preprocessor', regression_system.preprocessor),
-#                     ('model', model)
-#                 ])
-                
-#                 # Fit the pipeline
-#                 pipeline.fit(regression_system.X, regression_system.y)
-                
-#                 # Get feature names after preprocessing
-#                 feature_names = []
-                
-#                 # Add numerical feature names
-#                 if regression_system.numerical_features:
-#                     feature_names.extend(regression_system.numerical_features)
-                
-#                 # Add one-hot encoded categorical feature names
-#                 if regression_system.categorical_features:
-#                     try:
-#                         # Get the categorical transformer
-#                         cat_transformer = regression_system.preprocessor.named_transformers_['cat']
-#                         # Get the one-hot encoder
-#                         one_hot = cat_transformer.named_steps['onehot']
-#                         # Get the categories
-#                         for i, feature in enumerate(regression_system.categorical_features):
-#                             categories = one_hot.categories_[i]
-#                             for category in categories:
-#                                 feature_names.append(f"{feature}_{category}")
-#                     except Exception as e:
-#                         # If there's an error getting categorical feature names, log it but continue
-#                         print(f"Error getting categorical feature names: {str(e)}")
-                
-#                 # Calculate feature importances from the model
-#                 importances = model.feature_importances_
-                
-#                 # Create a DataFrame with feature importance
-#                 importance_df = pd.DataFrame({
-#                     'Feature': feature_names[:len(importances)],  # Ensure lengths match
-#                     'Importance': importances
-#                 }).sort_values('Importance', ascending=False)
-                
-#                 # Create visualization
-#                 fig = plt.figure(figsize=(10, 8))
-#                 sns.barplot(x='Importance', y='Feature', data=importance_df)
-#                 plt.title(f'Feature Importance using Random Forest')
-#                 plt.tight_layout()
-                
-#                 visualization = fig_to_base64(fig)
-                
-#                 return FeatureImportanceResponse(
-#                     success=True,
-#                     message="Feature importance analyzed successfully",
-#                     importance_data=convert_to_native_types(importance_df.to_dict(orient='records')),
-#                     visualization=visualization
-#                 )
-#             except Exception as e:
-#                 return FeatureImportanceResponse(
-#                     success=False,
-#                     message=f"Error parsing feature importance: {str(e)}",
-#                     importance_data=[],
-#                     visualization=""
-#                 )
-            
-#         finally:
-#             # Clean up
-#             plt.close('all')
-            
-    except Exception as e:
-        return FeatureImportanceResponse(
-            success=False,
-            message=f"Error analyzing feature importance: {str(e)}",
-            importance_data=[],
-            visualization=""
-        )
-
 @router.post("/select-algorithm", response_model=AlgorithmSelectionResponse)
 async def select_algorithm(request: AlgorithmSelectionRequest):
     """
@@ -725,8 +701,8 @@ async def preprocess_data():
             test_shape=[0, 0]
         )
 
-@router.get("/train-model", response_model=TrainingResponse)
-async def train_model():
+@router.post("/train-model", response_model=TrainingResponse)
+async def train_model(background_tasks: BackgroundTasks):
     """
     Train the model with the selected algorithm and configured hyperparameters.
     """
@@ -734,35 +710,56 @@ async def train_model():
         if regression_system.model_name is None or regression_system.X is None or regression_system.y is None:
             return TrainingResponse(
                 success=False,
-                message="No algorithm selected or features not defined. Please select an algorithm and define features first.",
-                training_time=0.0
+                message="No algorithm selected or features not defined"
             )
+
+        # Reset and start progress tracker
+        progress_tracker.start_task()
         
-        # Train the model
-        import time
-        start_time = time.time()
-        
-        metrics = regression_system.train_model(
-            model_name=regression_system.model_name,
-            hyperparameters=regression_system.hyperparameters or {}
-        )
-        
-        training_time = time.time() - start_time
-        
-        if metrics is None:
-            return TrainingResponse(
-                success=False,
-                message="Failed to train model.",
-                training_time=0.0
-            )
+        async def train_with_timeout():
+            try:
+                # Data preparation phase
+                progress_tracker.update(20, "Preparing data for training...")
+                await asyncio.sleep(0.1)  # Give time for frontend to update
+                
+                # Model initialization
+                progress_tracker.update(40, "Initializing model...")
+                await asyncio.sleep(0.1)
+                
+                # Training phase
+                progress_tracker.update(60, "Training model...")
+                results = regression_system.train_model(regression_system.model_name)
+                
+                if results is None:
+                    progress_tracker.set_error("Error training model")
+                    return
+                
+                # Store results for evaluation
+                regression_system.last_evaluation = results
+                
+                # Evaluation phase
+                progress_tracker.update(80, "Evaluating model performance...")
+                await asyncio.sleep(0.1)
+                
+                # Calculate final metrics
+                r2_score = results.get('r2_score', 0)
+                progress_tracker.update(100, f"Training complete. R² Score: {r2_score:.4f}")
+                
+            except Exception as e:
+                progress_tracker.set_error(str(e))
+                raise e
+
+        # Start the background task
+        background_tasks.add_task(train_with_timeout)
         
         return TrainingResponse(
             success=True,
-            message="Model trained successfully",
-            training_time=training_time
+            message="Model training started. Check progress endpoint for updates.",
+            training_time=0.0  # Will be updated during training
         )
         
     except Exception as e:
+        progress_tracker.set_error(str(e))
         return TrainingResponse(
             success=False,
             message=f"Error training model: {str(e)}",
@@ -1189,8 +1186,8 @@ async def perform_grid_search(request: GridSearchRequest):
             search_time=0.0
         )
 
-@router.get("/save-model", response_model=ModelSaveResponse)
-async def save_model(directory: str = "models"):
+@router.post("/save-model", response_model=ModelSaveResponse)
+async def save_model(request: ModelSaveRequest):
     """
     Save the trained model and preprocessor to disk.
     """
@@ -1203,12 +1200,16 @@ async def save_model(directory: str = "models"):
                 timestamp=""
             )
         
+        # Use the user-specified directory and model name
+        directory = request.save_directory
+        model_name = request.model_name
+        
         # Create directory if it doesn't exist
         os.makedirs(directory, exist_ok=True)
         
-        # Generate filename
+        # Generate filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{regression_system.model_name}_{timestamp}.joblib"
+        filename = f"{model_name}_{timestamp}.joblib"
         filepath = os.path.join(directory, filename)
         
         # Save model
@@ -1245,3 +1246,17 @@ async def get_algorithm_descriptions():
             status_code=500,
             detail=f"Error getting algorithm descriptions: {str(e)}"
         )
+
+@router.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup resources on shutdown"""
+    global session
+    try:
+        if session and not session.closed:
+            await session.close()
+        if connector and not connector.closed:
+            await connector.close()
+    except Exception as e:
+        logger.error(f"Error during shutdown: {str(e)}")
+    finally:
+        session = None
