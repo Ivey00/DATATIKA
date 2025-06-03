@@ -6,17 +6,21 @@ import tempfile
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from typing import Dict, Any, List, Optional
 import json
 from io import BytesIO
 import seaborn as sns
+import asyncio
+import time
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from app.core.time_series import TimeSeriesForecaster
 from app.models.schema import (
     DataImportRequest, DataImportResponse,
     ColumnInfoResponse,
-    FeatureDefinitionRequest, FeatureDefinitionResponse,
+    TimeSeriesFeatureDefinitionRequest, TimeSeriesFeatureDefinitionResponse,
     ItemFilterRequest, ItemFilterResponse,
     VisualizationResponse,
     FeatureImportanceResponse,
@@ -38,6 +42,46 @@ router = APIRouter()
 # In a production environment, this would be handled differently
 # with a database to store session state
 time_series_forecaster = TimeSeriesForecaster()
+
+# Progress tracker for long-running tasks
+class ProgressTracker:
+    def __init__(self):
+        self.progress = 0
+        self.message = ""
+        self.error = None
+        self.is_running = False
+        self.start_time = None
+
+    def update(self, progress: int, message: str = ""):
+        self.progress = progress
+        self.message = message
+
+    def set_error(self, error_msg: str):
+        self.error = error_msg
+        self.is_running = False
+
+    def start_task(self):
+        self.progress = 0
+        self.message = "Starting task..."
+        self.error = None
+        self.is_running = True
+        self.start_time = time.time()
+
+    def reset(self):
+        self.__init__()
+
+# Global progress tracker
+progress_tracker = ProgressTracker()
+
+# Create a thread pool for background tasks
+thread_pool = ThreadPoolExecutor(max_workers=4)
+
+async def run_in_threadpool(func, *args, **kwargs):
+    """Run a CPU-bound function in a thread pool."""
+    return await asyncio.get_event_loop().run_in_executor(
+        thread_pool, 
+        partial(func, *args, **kwargs)
+    )
 
 def fig_to_base64(fig):
     """Convert a matplotlib figure to base64 encoded string."""
@@ -149,10 +193,10 @@ async def get_column_info():
             detail=f"Error getting column information: {str(e)}"
         )
 
-@router.post("/define-features", response_model=FeatureDefinitionResponse)
-async def define_features(request: FeatureDefinitionRequest):
+@router.post("/define-features", response_model=TimeSeriesFeatureDefinitionResponse)
+async def define_features(request: TimeSeriesFeatureDefinitionRequest):
     """
-    Define the features and target for the model.
+    Define the features for time series forecasting.
     """
     try:
         # Define column types
@@ -161,40 +205,47 @@ async def define_features(request: FeatureDefinitionRequest):
             target_col=request.target,
             item_id_col=request.item_id_column,
             categorical_cols=request.categorical_features,
-            numerical_cols=request.numerical_features
+            numerical_cols=request.numerical_features,
+            additional_features=request.additional_features
         )
         
         if columns_info is None:
-            return FeatureDefinitionResponse(
+            return TimeSeriesFeatureDefinitionResponse(
                 success=False,
-                message="Failed to define features and target. Please import data first.",
-                features=request.features,
+                message="Failed to define features. Please import data first.",
+                datetime_column=request.datetime_column,
                 target=request.target,
-                categorical_features=request.categorical_features or [],
-                numerical_features=request.numerical_features or [],
-                datetime_column=request.datetime_column
+                features=[],
+                additional_features=request.additional_features,
+                categorical_features=request.categorical_features,
+                numerical_features=request.numerical_features,
+                auto_generated_features=[]
             )
         
-        return FeatureDefinitionResponse(
+        return TimeSeriesFeatureDefinitionResponse(
             success=True,
-            message="Features and target defined successfully",
-            features=time_series_forecaster.features,
+            message="Features defined successfully",
+            datetime_column=time_series_forecaster.datetime_col,
             target=time_series_forecaster.target,
+            features=time_series_forecaster.features,
+            additional_features=request.additional_features,
             categorical_features=time_series_forecaster.categorical_cols,
             numerical_features=time_series_forecaster.numerical_cols,
             item_id_column=time_series_forecaster.item_id_col,
-            datetime_column=time_series_forecaster.datetime_col
+            auto_generated_features=time_series_forecaster.auto_generated_features
         )
         
     except Exception as e:
-        return FeatureDefinitionResponse(
+        return TimeSeriesFeatureDefinitionResponse(
             success=False,
-            message=f"Error defining features and target: {str(e)}",
-            features=request.features,
+            message=f"Error defining features: {str(e)}",
+            datetime_column=request.datetime_column,
             target=request.target,
-            categorical_features=request.categorical_features or [],
-            numerical_features=request.numerical_features or [],
-            datetime_column=request.datetime_column
+            features=[],
+            additional_features=request.additional_features,
+            categorical_features=request.categorical_features,
+            numerical_features=request.numerical_features,
+            auto_generated_features=[]
         )
 
 @router.post("/define-time-unit", response_model=Dict[str, Any])
@@ -545,8 +596,18 @@ async def preprocess_data(test_size: float = 0.2):
             test_shape=[0, 0]
         )
 
+@router.get("/check-progress")
+async def check_progress():
+    """Check the progress of the current task."""
+    return {
+        "progress": progress_tracker.progress,
+        "message": progress_tracker.message,
+        "error": progress_tracker.error,
+        "is_running": progress_tracker.is_running
+    }
+
 @router.get("/train-model", response_model=TrainingResponse)
-async def train_model():
+async def train_model(background_tasks: BackgroundTasks):
     """
     Train the time series forecasting model.
     """
@@ -559,28 +620,69 @@ async def train_model():
                 training_time=0.0
             )
         
-        # Train the model
-        import time
-        start_time = time.time()
-        
-        model = time_series_forecaster.train_model()
-        
-        training_time = time.time() - start_time
-        
-        if model is None:
+        # Check if training is already in progress
+        if progress_tracker.is_running:
             return TrainingResponse(
                 success=False,
-                message="Failed to train model.",
+                message="Training is already in progress. Please wait for it to complete.",
                 training_time=0.0
             )
+
+        # Reset progress tracker
+        progress_tracker.reset()
+        progress_tracker.start_task()
+
+        async def train_with_timeout():
+            timeout = 30 * 60  # 30 minutes timeout
+
+            async def training_task():
+                try:
+                    # Train the model in a separate thread to avoid blocking
+                    progress_tracker.update(20, "Preprocessing data...")
+                    await asyncio.sleep(0.1)
+
+                    # Run the CPU-intensive training in a thread pool
+                    progress_tracker.update(40, "Training model...")
+                    model = await run_in_threadpool(time_series_forecaster.train_model)
+                    
+                    if model is None:
+                        progress_tracker.set_error("Failed to train model.")
+                        return
+
+                    progress_tracker.update(80, "Finalizing training...")
+                    await asyncio.sleep(0.1)
+
+                    progress_tracker.update(100, "Training completed successfully.")
+                    progress_tracker.is_running = False
+
+                except Exception as e:
+                    progress_tracker.set_error(f"Error during training: {str(e)}")
+                    raise
+
+            try:
+                # Run with timeout
+                await asyncio.wait_for(training_task(), timeout=timeout)
+            except asyncio.TimeoutError:
+                progress_tracker.set_error(f"Training timed out after {timeout} seconds")
+                raise HTTPException(
+                    status_code=408,
+                    detail="Training timed out"
+                )
+            except Exception as e:
+                progress_tracker.set_error(f"Error during training: {str(e)}")
+                raise
+
+        # Start training in background
+        background_tasks.add_task(train_with_timeout)
         
         return TrainingResponse(
             success=True,
-            message="Model trained successfully.",
-            training_time=training_time
+            message="Model training started in background.",
+            training_time=0.0
         )
         
     except Exception as e:
+        progress_tracker.set_error(f"Error starting training: {str(e)}")
         return TrainingResponse(
             success=False,
             message=f"Error training model: {str(e)}",
@@ -693,35 +795,118 @@ async def predict(request: PredictionRequest):
                     prediction_count=0
                 )
             
-            # Check if the required features are present
-            missing_features = [f for f in time_series_forecaster.features if f not in prediction_data.columns]
-            if missing_features:
+            # Check if datetime column exists
+            if time_series_forecaster.datetime_col not in prediction_data.columns:
                 return PredictionResponse(
                     success=False,
-                    message=f"Missing features in prediction data: {', '.join(missing_features)}",
+                    message=f"Missing datetime column: {time_series_forecaster.datetime_col}",
                     predictions=[],
                     prediction_count=0
                 )
             
-            # Make predictions using future_data parameter
-            result = time_series_forecaster.predict_future(future_data=prediction_data)
+            # Convert datetime column
+            prediction_data[time_series_forecaster.datetime_col] = pd.to_datetime(prediction_data[time_series_forecaster.datetime_col])
             
-            if result is None:
-                return PredictionResponse(
-                    success=False,
-                    message="Failed to make predictions.",
-                    predictions=[],
-                    prediction_count=0
-                )
+            # Sort by datetime
+            prediction_data = prediction_data.sort_values(by=time_series_forecaster.datetime_col)
+            
+            # Create time-based features
+            prediction_data['hour'] = prediction_data[time_series_forecaster.datetime_col].dt.hour
+            prediction_data['day'] = prediction_data[time_series_forecaster.datetime_col].dt.day
+            prediction_data['month'] = prediction_data[time_series_forecaster.datetime_col].dt.month
+            prediction_data['year'] = prediction_data[time_series_forecaster.datetime_col].dt.year
+            prediction_data['dayofweek'] = prediction_data[time_series_forecaster.datetime_col].dt.dayofweek
+
+            # Create lag features if target column exists in prediction data
+            if time_series_forecaster.target in prediction_data.columns:
+                for lag in [1, 2, 3, 5, 7]:
+                    lag_col = f'{time_series_forecaster.target}_lag_{lag}'
+                    prediction_data[lag_col] = prediction_data[time_series_forecaster.target].shift(lag)
+
+                # Create rolling window features
+                for window in [3, 5, 7]:
+                    # Rolling mean
+                    mean_col = f'{time_series_forecaster.target}_rolling_mean_{window}'
+                    prediction_data[mean_col] = prediction_data[time_series_forecaster.target].rolling(window=window).mean()
+                    
+                    # Rolling std
+                    std_col = f'{time_series_forecaster.target}_rolling_std_{window}'
+                    prediction_data[std_col] = prediction_data[time_series_forecaster.target].rolling(window=window).std()
+            else:
+                # If target column doesn't exist, use historical values from training data
+                last_values = time_series_forecaster.data[time_series_forecaster.target].tail(10).values
+                
+                # Add lag features using historical values
+                for lag in [1, 2, 3, 5, 7]:
+                    lag_col = f'{time_series_forecaster.target}_lag_{lag}'
+                    if lag < len(last_values):
+                        prediction_data[lag_col] = [last_values[-lag]] * len(prediction_data)
+                    else:
+                        prediction_data[lag_col] = [last_values[0]] * len(prediction_data)
+                
+                # Add rolling features using historical values
+                for window in [3, 5, 7]:
+                    # Rolling mean
+                    mean_col = f'{time_series_forecaster.target}_rolling_mean_{window}'
+                    if window < len(last_values):
+                        prediction_data[mean_col] = [np.mean(last_values[-window:])] * len(prediction_data)
+                    else:
+                        prediction_data[mean_col] = [np.mean(last_values)] * len(prediction_data)
+                    
+                    # Rolling std
+                    std_col = f'{time_series_forecaster.target}_rolling_std_{window}'
+                    if window < len(last_values):
+                        prediction_data[std_col] = [np.std(last_values[-window:])] * len(prediction_data)
+                    else:
+                        prediction_data[std_col] = [np.std(last_values)] * len(prediction_data)
+
+            # Check for missing numerical features and impute with training mean
+            for col in time_series_forecaster.numerical_cols:
+                if col not in prediction_data.columns and col not in ['hour', 'day', 'month', 'year', 'dayofweek'] and not col.startswith(f'{time_series_forecaster.target}_'):
+                    if col in time_series_forecaster.data.columns:
+                        prediction_data[col] = time_series_forecaster.data[col].mean()
+                    else:
+                        prediction_data[col] = 0  # Fallback value
+
+            # Check for missing categorical features and impute with mode
+            for col in time_series_forecaster.categorical_cols:
+                if col not in prediction_data.columns and col != time_series_forecaster.item_id_col:
+                    if col in time_series_forecaster.data.columns:
+                        prediction_data[col] = time_series_forecaster.data[col].mode()[0]
+                    else:
+                        prediction_data[col] = 'unknown'  # Fallback value
+
+            # Prepare features for prediction
+            X_pred = prediction_data[time_series_forecaster.features].copy()
+            
+            # Transform features using the same preprocessor
+            X_pred_processed = time_series_forecaster.preprocessor.transform(X_pred)
+            
+            # Make predictions
+            predictions = time_series_forecaster.model.predict(X_pred_processed)
+            
+            # Create results DataFrame
+            results_df = pd.DataFrame({
+                time_series_forecaster.datetime_col: prediction_data[time_series_forecaster.datetime_col],
+                'Prediction': predictions
+            })
+            
+            # Add actual values if available
+            if time_series_forecaster.target in prediction_data.columns:
+                results_df['Actual'] = prediction_data[time_series_forecaster.target]
+            
+            # Add item ID if available
+            if time_series_forecaster.item_id_col and time_series_forecaster.item_id_col in prediction_data.columns:
+                results_df[time_series_forecaster.item_id_col] = prediction_data[time_series_forecaster.item_id_col]
             
             # Convert to records
-            predictions = convert_to_native_types(result.to_dict(orient='records'))
+            predictions_list = convert_to_native_types(results_df.to_dict(orient='records'))
             
             return PredictionResponse(
                 success=True,
-                message=f"Made {len(predictions)} predictions successfully.",
-                predictions=predictions,
-                prediction_count=len(predictions)
+                message=f"Made {len(predictions_list)} predictions successfully.",
+                predictions=predictions_list,
+                prediction_count=len(predictions_list)
             )
             
         finally:

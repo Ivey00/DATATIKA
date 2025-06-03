@@ -192,3 +192,24 @@ class ErrorResponse(CustomBaseModel):
     message: str = Field(..., description="Error message")
     error_type: Optional[str] = Field(None, description="Type of error")
     details: Optional[Dict[str, Any]] = Field(None, description="Additional error details")
+
+# Time Series Specific Models
+class TimeSeriesFeatureDefinitionRequest(CustomBaseModel):
+    datetime_column: str = Field(..., description="Name of the datetime column")
+    target: str = Field(..., description="Name of the target column")
+    additional_features: Optional[List[str]] = Field(default=None, description="Optional additional features to use")
+    categorical_features: Optional[List[str]] = Field(default=None, description="Optional list of categorical features")
+    numerical_features: Optional[List[str]] = Field(default=None, description="Optional list of numerical features")
+    item_id_column: Optional[str] = Field(default=None, description="Optional column name for item/machine ID")
+
+class TimeSeriesFeatureDefinitionResponse(CustomBaseModel):
+    success: bool = Field(..., description="Whether the feature definition was successful")
+    message: str = Field(..., description="Status message")
+    datetime_column: str = Field(..., description="Selected datetime column")
+    target: str = Field(..., description="Selected target column")
+    features: List[str] = Field(..., description="All features including auto-generated ones")
+    additional_features: Optional[List[str]] = Field(default=None, description="Additional features if provided")
+    categorical_features: Optional[List[str]] = Field(default=None, description="Categorical features if any")
+    numerical_features: Optional[List[str]] = Field(default=None, description="Numerical features if any")
+    item_id_column: Optional[str] = Field(default=None, description="Item ID column if specified")
+    auto_generated_features: List[str] = Field(..., description="List of automatically generated time series features")

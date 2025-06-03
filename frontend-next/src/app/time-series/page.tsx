@@ -33,12 +33,12 @@ interface DataInfo {
 }
 
 interface FeatureDefinition {
-  features: string[];
+  datetime_column: string;
   target: string;
-  categoricalFeatures: string[];
-  numericalFeatures: string[];
-  datetimeColumn: string;
-  itemIdColumn: string | null;
+  additional_features: string[];
+  categorical_features: string[];
+  numerical_features: string[];
+  item_id_column: string | null;
 }
 
 interface TimeUnitDefinition {
@@ -64,6 +64,45 @@ interface Prediction {
   [key: string]: any;
 }
 
+// Add retry mechanism for API requests
+const apiRequestWithRetry = async (url: string, options?: RequestInit, maxRetries = 3) => {
+  let lastError;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          ...options?.headers,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      lastError = error;
+      console.error(`Attempt ${attempt + 1} failed:`, error);
+      
+      // Only retry on network errors or 5xx server errors
+      if (error instanceof Error && error.message.includes('fetch failed') ||
+          error instanceof Error && error.message.includes('status: 5')) {
+        // Exponential backoff
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+        continue;
+      }
+      
+      throw error;
+    }
+  }
+  
+  throw lastError;
+};
+
 // Main component
 export default function TimeSeries() {
   const { toast } = useToast();
@@ -75,12 +114,12 @@ export default function TimeSeries() {
   const [dataFile, setDataFile] = useState<File | null>(null);
   const [dataInfo, setDataInfo] = useState<DataInfo | null>(null);
   const [featureDefinition, setFeatureDefinition] = useState<FeatureDefinition>({
-    features: [],
+    datetime_column: "",
     target: "",
-    categoricalFeatures: [],
-    numericalFeatures: [],
-    datetimeColumn: "",
-    itemIdColumn: null
+    additional_features: [],
+    categorical_features: [],
+    numerical_features: [],
+    item_id_column: null
   });
   const [timeUnitDefinition, setTimeUnitDefinition] = useState<TimeUnitDefinition>({
     timeUnit: "day",
@@ -95,7 +134,6 @@ export default function TimeSeries() {
   const [predictionFile, setPredictionFile] = useState<File | null>(null);
   const [futurePeriods, setFuturePeriods] = useState(7);
   const [visualizations, setVisualizations] = useState<Record<string, string>>({});
-  const [featureImportance, setFeatureImportance] = useState<{data: any[], visualization: string} | null>(null);
   const [plotType, setPlotType] = useState<string>("all");
   
   // Available algorithms
@@ -209,7 +247,7 @@ export default function TimeSeries() {
   // Function to fetch column info
   const fetchColumnInfo = async () => {
     try {
-      const data = await apiRequest('/api/time-series/column-info');
+      const data = await apiRequestWithRetry('/api/time-series/column-info');
       
       if (data.column_info) {
         setDataInfo(prev => prev ? {
@@ -219,64 +257,57 @@ export default function TimeSeries() {
       }
     } catch (error) {
       console.error("Error fetching column info:", error);
+      toast({
+        title: "Error fetching column info",
+        description: error instanceof Error ? error.message : "An unexpected error occurred",
+        variant: "destructive"
+      });
     }
   };
   
   // Function to handle feature definition
   const handleFeatureDefinition = async () => {
-    if (!featureDefinition.features.length || !featureDefinition.target || !featureDefinition.datetimeColumn) {
+    if (!featureDefinition.datetime_column || !featureDefinition.target) {
       toast({
-        title: "Missing information",
-        description: "Please select datetime column, features, and target column",
+        title: "Error",
+        description: "Please select datetime and target columns.",
         variant: "destructive"
       });
       return;
     }
-    
-    setLoading(true);
+
     try {
-      const data = await apiRequest('/api/time-series/define-features', {
+      const response = await apiRequest('/api/time-series/define-features', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify({
-          features: featureDefinition.features,
+          datetime_column: featureDefinition.datetime_column,
           target: featureDefinition.target,
-          categorical_features: featureDefinition.categoricalFeatures,
-          numerical_features: featureDefinition.numericalFeatures,
-          datetime_column: featureDefinition.datetimeColumn,
-          item_id_column: featureDefinition.itemIdColumn
+          additional_features: featureDefinition.additional_features,
+          categorical_features: featureDefinition.categorical_features,
+          numerical_features: featureDefinition.numerical_features,
+          item_id_column: featureDefinition.item_id_column
         })
       });
-      
-      if (data.success) {
+
+      if (response.success) {
         toast({
-          title: "Features defined successfully",
-          description: `Defined ${data.features.length} features and target: ${data.target}`,
+          title: "Success",
+          description: "Features defined successfully."
         });
-        
-        // Define time unit
-        await handleTimeUnitDefinition();
-        
-        // Move to the next tab
         setActiveTab("visualize");
       } else {
         toast({
-          title: "Error defining features",
-          description: data.message,
+          title: "Error",
+          description: response.message,
           variant: "destructive"
         });
       }
     } catch (error) {
-      console.error("Error defining features:", error);
       toast({
-        title: "Error defining features",
-        description: "An unexpected error occurred",
+        title: "Error",
+        description: "Failed to define features.",
         variant: "destructive"
       });
-    } finally {
-      setLoading(false);
     }
   };
   
@@ -327,12 +358,12 @@ export default function TimeSeries() {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          features: featureDefinition.features,
+          features: featureDefinition.additional_features.concat(featureDefinition.categorical_features).concat(featureDefinition.numerical_features),
           target: featureDefinition.target,
-          categorical_features: featureDefinition.categoricalFeatures,
-          numerical_features: featureDefinition.numericalFeatures,
-          datetime_column: featureDefinition.datetimeColumn,
-          item_id_column: featureDefinition.itemIdColumn
+          categorical_features: featureDefinition.categorical_features,
+          numerical_features: featureDefinition.numerical_features,
+          datetime_column: featureDefinition.datetime_column,
+          item_id_column: featureDefinition.item_id_column
         })
       });
       
@@ -357,40 +388,6 @@ export default function TimeSeries() {
       console.error("Error fetching visualizations:", error);
       toast({
         title: "Error generating visualizations",
-        description: "An unexpected error occurred",
-        variant: "destructive"
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-  
-  // Function to fetch feature importance
-  const fetchFeatureImportance = async () => {
-    setLoading(true);
-    try {
-      const data = await apiRequest('/api/time-series/analyze-feature-importance');
-      
-      if (data.success) {
-        setFeatureImportance({
-          data: data.importance_data,
-          visualization: data.visualization
-        });
-        toast({
-          title: "Feature importance analyzed",
-          description: "Feature importance analysis completed successfully",
-        });
-      } else {
-        toast({
-          title: "Error analyzing feature importance",
-          description: data.message,
-          variant: "destructive"
-        });
-      }
-    } catch (error) {
-      console.error("Error fetching feature importance:", error);
-      toast({
-        title: "Error analyzing feature importance",
         description: "An unexpected error occurred",
         variant: "destructive"
       });
@@ -504,44 +501,93 @@ export default function TimeSeries() {
     
     try {
       // First preprocess the data
-      const preprocessData = await apiRequest('/api/time-series/preprocess-data');
+      const preprocessData = await apiRequestWithRetry('/api/time-series/preprocess-data');
       
       if (!preprocessData.success) {
         throw new Error(preprocessData.message);
       }
       
-      setProgress(33);
+      setProgress(20);
       
-      // Then train the model
-      const trainData = await apiRequest('/api/time-series/train-model');
+      // Then train the model with retry
+      const trainData = await apiRequestWithRetry('/api/time-series/train-model');
       
       if (!trainData.success) {
         throw new Error(trainData.message);
       }
+
+      // Start polling for progress with retry and timeout
+      const pollProgress = async () => {
+        const maxPollingTime = 30 * 60 * 1000; // 30 minutes
+        const startTime = Date.now();
+        
+        const poll = async () => {
+          try {
+            if (Date.now() - startTime > maxPollingTime) {
+              throw new Error("Training timeout: Operation took too long");
+            }
+
+            const response = await apiRequestWithRetry('/api/time-series/check-progress');
+            
+            if (response.error) {
+              throw new Error(response.error);
+            }
+            
+            setProgress(response.progress);
+            
+            if (response.is_running) {
+              // Continue polling if task is still running
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              return poll();
+            } else {
+              // Task completed, evaluate the model with retry
+              const evaluateData = await apiRequestWithRetry('/api/time-series/evaluate-model');
+              
+              if (!evaluateData.success) {
+                throw new Error(evaluateData.message);
+              }
+              
+              setProgress(100);
+              setModelTrained(true);
+              setEvaluation({
+                metrics: evaluateData.metrics,
+                visualizations: evaluateData.visualizations
+              });
+              
+              toast({
+                title: "Model trained successfully",
+                description: `R² Score: ${(evaluateData.metrics.R2 * 100).toFixed(2)}%`,
+              });
+              
+              // Move to the next tab
+              setActiveTab("evaluation");
+            }
+          } catch (error) {
+            console.error("Error in polling:", error);
+            
+            // Check if we should retry based on error type
+            if (error instanceof Error && 
+                (error.message.includes('fetch failed') || error.message.includes('status: 5'))) {
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              return poll();
+            }
+            
+            toast({
+              title: "Error training model",
+              description: error instanceof Error ? error.message : "An unexpected error occurred",
+              variant: "destructive"
+            });
+            setLoading(false);
+            throw error;
+          }
+        };
+        
+        return poll();
+      };
       
-      setProgress(66);
+      // Start polling
+      await pollProgress();
       
-      // Finally evaluate the model
-      const evaluateData = await apiRequest('/api/time-series/evaluate-model');
-      
-      if (!evaluateData.success) {
-        throw new Error(evaluateData.message);
-      }
-      
-      setProgress(100);
-      setModelTrained(true);
-      setEvaluation({
-        metrics: evaluateData.metrics,
-        visualizations: evaluateData.visualizations
-      });
-      
-      toast({
-        title: "Model trained successfully",
-        description: `R² Score: ${(evaluateData.metrics.R2 * 100).toFixed(2)}%`,
-      });
-      
-      // Move to the next tab
-      setActiveTab("evaluation");
     } catch (error) {
       console.error("Error training model:", error);
       toast({
@@ -669,12 +715,12 @@ export default function TimeSeries() {
     if (isSelected) {
       setFeatureDefinition(prev => ({
         ...prev,
-        features: [...prev.features, column]
+        additional_features: [...prev.additional_features, column]
       }));
     } else {
       setFeatureDefinition(prev => ({
         ...prev,
-        features: prev.features.filter(f => f !== column)
+        additional_features: prev.additional_features.filter(f => f !== column)
       }));
     }
   };
@@ -684,14 +730,14 @@ export default function TimeSeries() {
     if (type === 'categorical') {
       setFeatureDefinition(prev => ({
         ...prev,
-        categoricalFeatures: [...prev.categoricalFeatures.filter(f => f !== column), column],
-        numericalFeatures: prev.numericalFeatures.filter(f => f !== column)
+        categorical_features: [...prev.categorical_features.filter(f => f !== column), column],
+        numerical_features: prev.numerical_features.filter(f => f !== column)
       }));
     } else {
       setFeatureDefinition(prev => ({
         ...prev,
-        numericalFeatures: [...prev.numericalFeatures.filter(f => f !== column), column],
-        categoricalFeatures: prev.categoricalFeatures.filter(f => f !== column)
+        numerical_features: [...prev.numerical_features.filter(f => f !== column), column],
+        categorical_features: prev.categorical_features.filter(f => f !== column)
       }));
     }
   };
@@ -702,9 +748,9 @@ export default function TimeSeries() {
       ...prev,
       target: column,
       // Remove target from features if it's there
-      features: prev.features.filter(f => f !== column),
+      additional_features: prev.additional_features.filter(f => f !== column),
       // Remove target from datetime if it's there
-      datetimeColumn: prev.datetimeColumn === column ? "" : prev.datetimeColumn
+      datetime_column: prev.datetime_column === column ? "" : prev.datetime_column
     }));
   };
   
@@ -712,9 +758,9 @@ export default function TimeSeries() {
   const handleDatetimeSelection = (column: string) => {
     setFeatureDefinition(prev => ({
       ...prev,
-      datetimeColumn: column,
+      datetime_column: column,
       // Remove datetime from features if it's there
-      features: prev.features.filter(f => f !== column),
+      additional_features: prev.additional_features.filter(f => f !== column),
       // Remove datetime from target if it's there
       target: prev.target === column ? "" : prev.target
     }));
@@ -724,9 +770,9 @@ export default function TimeSeries() {
   const handleItemIdSelection = (column: string | null) => {
     setFeatureDefinition(prev => ({
       ...prev,
-      itemIdColumn: column,
+      item_id_column: column,
       // Remove item ID from features if it's there
-      features: column ? prev.features.filter(f => f !== column) : prev.features
+      additional_features: column ? prev.additional_features.filter(f => f !== column) : prev.additional_features
     }));
   };
   
@@ -834,7 +880,7 @@ export default function TimeSeries() {
             <div>
               <Label htmlFor="datetimeColumn">Datetime Column</Label>
               <Select 
-                value={featureDefinition.datetimeColumn} 
+                value={featureDefinition.datetime_column} 
                 onValueChange={handleDatetimeSelection}
               >
                 <SelectTrigger id="datetimeColumn" className="border-tertiary">
@@ -878,7 +924,7 @@ export default function TimeSeries() {
             <div>
               <Label htmlFor="itemIdColumn">Item/Machine ID Column (Optional)</Label>
               <Select 
-                value={featureDefinition.itemIdColumn || "none"} 
+                value={featureDefinition.item_id_column || "none"} 
                 onValueChange={(val: string) => handleItemIdSelection(val === "none" ? null : val)}
               >
                 <SelectTrigger id="itemIdColumn" className="border-tertiary">
@@ -944,12 +990,12 @@ export default function TimeSeries() {
               <h3 className="text-lg font-medium text-secondary mb-2">Select Features</h3>
               <div className="space-y-2">
                 {dataInfo.columns.map(col => {
-                  const isFeature = featureDefinition.features.includes(col);
+                  const isFeature = featureDefinition.additional_features.includes(col);
                   const isTarget = featureDefinition.target === col;
-                  const isDatetime = featureDefinition.datetimeColumn === col;
-                  const isItemId = featureDefinition.itemIdColumn === col;
-                  const isCategorical = featureDefinition.categoricalFeatures.includes(col);
-                  const isNumerical = featureDefinition.numericalFeatures.includes(col);
+                  const isDatetime = featureDefinition.datetime_column === col;
+                  const isItemId = featureDefinition.item_id_column === col;
+                  const isCategorical = featureDefinition.categorical_features.includes(col);
+                  const isNumerical = featureDefinition.numerical_features.includes(col);
                   const columnInfo = dataInfo.columnInfo[col];
                   
                   return (
@@ -1013,7 +1059,7 @@ export default function TimeSeries() {
         </Button>
         <Button 
           onClick={handleFeatureDefinition} 
-          disabled={!featureDefinition.features.length || !featureDefinition.target || !featureDefinition.datetimeColumn || loading}
+          disabled={!featureDefinition.datetime_column || !featureDefinition.target || loading}
           variant="secondary"
         >
           Next: Visualize Data
@@ -1028,7 +1074,7 @@ export default function TimeSeries() {
       <CardHeader className="border-b border-tertiary">
         <CardTitle className="text-primary">Data Visualization</CardTitle>
         <CardDescription className="text-foreground/80">
-          Visualize your time series data and analyze feature importance.
+          Visualize your time series data.
         </CardDescription>
       </CardHeader>
       <CardContent className="pt-6">
@@ -1121,56 +1167,6 @@ export default function TimeSeries() {
               <p className="text-sm text-foreground/70">
                 Click "Generate Visualizations" to see visualizations of your data
               </p>
-            )}
-          </div>
-          
-          <Separator className="bg-tertiary/50" />
-          
-          <div>
-            <h3 className="text-lg font-medium text-secondary mb-2">Feature Importance Analysis</h3>
-            <p className="text-sm text-foreground/70 mb-2">
-              Analyze which features have the most impact on your target variable.
-            </p>
-            
-            <Button 
-              onClick={fetchFeatureImportance} 
-              disabled={loading}
-              variant="default"
-              className="mb-4"
-            >
-              {loading ? "Analyzing..." : "Analyze Feature Importance"}
-            </Button>
-            
-            {featureImportance && (
-              <div className="mt-2 border border-tertiary rounded-md p-4">
-                <img 
-                  src={`data:image/png;base64,${featureImportance.visualization}`} 
-                  alt="Feature Importance" 
-                  className="w-full"
-                />
-                <ScrollArea className="h-[200px] mt-4">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="bg-tertiary/20">
-                        <th className="p-2 text-left text-sm font-medium text-foreground">Feature</th>
-                        <th className="p-2 text-left text-sm font-medium text-foreground">Importance</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {featureImportance.data.map((item, i) => (
-                        <tr key={i} className="border-t border-tertiary/50">
-                          <td className="p-2 text-sm text-foreground/90">
-                            {item.Feature}
-                          </td>
-                          <td className="p-2 text-sm text-foreground/90">
-                            {(item.Importance * 100).toFixed(2)}%
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </ScrollArea>
-              </div>
             )}
           </div>
         </div>
@@ -1315,7 +1311,7 @@ export default function TimeSeries() {
               </div>
               <div className="flex justify-between">
                 <span className="text-foreground/80">Features:</span>
-                <span className="font-medium text-foreground">{featureDefinition.features.length}</span>
+                <span className="font-medium text-foreground">{featureDefinition.additional_features.length + featureDefinition.categorical_features.length + featureDefinition.numerical_features.length}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-foreground/80">Target:</span>
@@ -1323,7 +1319,7 @@ export default function TimeSeries() {
               </div>
               <div className="flex justify-between">
                 <span className="text-foreground/80">Datetime Column:</span>
-                <span className="font-medium text-foreground">{featureDefinition.datetimeColumn}</span>
+                <span className="font-medium text-foreground">{featureDefinition.datetime_column}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-foreground/80">Time Unit:</span>

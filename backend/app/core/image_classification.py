@@ -316,16 +316,72 @@ class ModelManager:
 
     def get_model_params(self, model_name):
         """
-        Retourne les paramètres actuels d'un modèle spécifié.
+        Retourne les paramètres actuels d'un modèle spécifié avec leurs valeurs suggérées.
         
         Args:
             model_name (str): Nom du modèle
             
         Returns:
-            dict: Dictionnaire des paramètres du modèle
+            dict: Dictionnaire des paramètres du modèle avec valeurs suggérées
         """
         if model_name in self.models:
-            return self.models[model_name]['params'].copy()
+            params = self.models[model_name]['params'].copy()
+            
+            # Define suggested values for each model's hyperparameters
+            suggested_values = {
+                'KNN': {
+                    'n_neighbors': [3, 5, 7, 9, 11],
+                    'weights': ['uniform', 'distance'],
+                    'algorithm': ['auto', 'ball_tree', 'kd_tree', 'brute'],
+                    'leaf_size': [20, 30, 40, 50],
+                    'p': [1, 2],  # 1 for Manhattan, 2 for Euclidean
+                    'metric': ['minkowski', 'euclidean', 'manhattan', 'chebyshev']
+                },
+                'SVM': {
+                    'C': [0.1, 1.0, 10.0, 100.0],
+                    'kernel': ['rbf', 'linear', 'poly', 'sigmoid'],
+                    'degree': [2, 3, 4, 5],
+                    'gamma': ['scale', 'auto', 0.001, 0.01, 0.1],
+                    'probability': [True, False],
+                    'random_state': [42]
+                },
+                'RandomForest': {
+                    'n_estimators': [50, 100, 200, 500],
+                    'criterion': ['gini', 'entropy', 'log_loss'],
+                    'max_depth': [None, 5, 10, 15, 20],
+                    'min_samples_split': [2, 5, 10],
+                    'min_samples_leaf': [1, 2, 4],
+                    'max_features': ['sqrt', 'log2', None],
+                    'random_state': [42]
+                },
+                'DecisionTree': {
+                    'criterion': ['gini', 'entropy', 'log_loss'],
+                    'splitter': ['best', 'random'],
+                    'max_depth': [None, 5, 10, 15, 20],
+                    'min_samples_split': [2, 5, 10],
+                    'min_samples_leaf': [1, 2, 4],
+                    'random_state': [42]
+                },
+                'GradientBoosting': {
+                    'n_estimators': [50, 100, 200, 500],
+                    'learning_rate': [0.01, 0.05, 0.1, 0.2],
+                    'max_depth': [3, 4, 5, 6],
+                    'min_samples_split': [2, 5, 10],
+                    'min_samples_leaf': [1, 2, 4],
+                    'subsample': [0.8, 0.9, 1.0],
+                    'random_state': [42]
+                }
+            }
+            
+            # Create a dictionary with current values and suggested values
+            result = {}
+            for param, value in params.items():
+                result[param] = {
+                    'current_value': value,
+                    'suggested_values': suggested_values[model_name][param]
+                }
+            
+            return result
         else:
             print(f"Modèle {model_name} non trouvé.")
             return None

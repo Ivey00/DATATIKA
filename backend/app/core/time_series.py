@@ -8,7 +8,6 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.inspection import permutation_importance
 import xgboost as xgb
 import lightgbm as lgbm
 from prophet import Prophet
@@ -34,6 +33,7 @@ class TimeSeriesForecaster:
         self.item_id_col = None
         self.categorical_cols = None
         self.numerical_cols = None
+        self.auto_generated_features = None  # Track auto-generated features
         self.model = None
         self.preprocessor = None
         self.X_train = None
@@ -48,7 +48,6 @@ class TimeSeriesForecaster:
         self.algorithm = None
         self.hyperparameters = None
         self.evaluation_metrics = None
-        self.feature_importance = None
         
         # Define available algorithms
         self.available_algorithms = {
@@ -183,7 +182,7 @@ class TimeSeriesForecaster:
             return None
     
     def define_columns(self, datetime_col, target_col, item_id_col=None, 
-                      categorical_cols=None, numerical_cols=None):
+                      categorical_cols=None, numerical_cols=None, additional_features=None):
         """
         Define the column types in the dataset.
         
@@ -199,6 +198,8 @@ class TimeSeriesForecaster:
             List of categorical column names
         numerical_cols : list, optional
             List of numerical column names
+        additional_features : list, optional
+            List of additional features to use
             
         Returns:
         --------
@@ -212,6 +213,7 @@ class TimeSeriesForecaster:
         self.datetime_col = datetime_col
         self.target = target_col
         self.item_id_col = item_id_col
+        self.auto_generated_features = []
         
         # Convert datetime column to datetime type
         try:
@@ -221,36 +223,51 @@ class TimeSeriesForecaster:
             print(f"Error converting {datetime_col} to datetime: {str(e)}")
             return None
         
-        # Auto-detect column types if not provided
-        if categorical_cols is None and numerical_cols is None:
-            self.categorical_cols = []
-            self.numerical_cols = []
-            
-            for col in self.data.columns:
-                if col in [datetime_col, target_col]:
+        # Initialize feature lists
+        self.categorical_cols = []
+        self.numerical_cols = []
+        
+        # Add time-based features
+        time_features = self._create_time_features()
+        self.numerical_cols.extend(time_features)
+        self.auto_generated_features.extend(time_features)
+        
+        # Add lag and rolling features
+        lag_features = self._create_lag_features()
+        self.numerical_cols.extend(lag_features)
+        self.auto_generated_features.extend(lag_features)
+        
+        # Process additional features if provided
+        if additional_features:
+            for col in additional_features:
+                if col in [datetime_col, target_col] or col in self.auto_generated_features:
                     continue
                     
                 if item_id_col is not None and col == item_id_col:
                     self.categorical_cols.append(col)
                     continue
                 
-                if self.data[col].dtype == 'object' or self.data[col].nunique() < 10:
+                # Auto-detect feature type if not specified
+                if categorical_cols is not None and col in categorical_cols:
                     self.categorical_cols.append(col)
-                else:
+                elif numerical_cols is not None and col in numerical_cols:
                     self.numerical_cols.append(col)
-        else:
-            self.categorical_cols = categorical_cols if categorical_cols is not None else []
-            self.numerical_cols = numerical_cols if numerical_cols is not None else []
+                else:
+                    if self.data[col].dtype == 'object' or self.data[col].nunique() < 10:
+                        self.categorical_cols.append(col)
+                    else:
+                        self.numerical_cols.append(col)
         
-        # Define features
+        # Define features as combination of all features
         self.features = self.numerical_cols + self.categorical_cols
         
         print(f"Defined columns:")
         print(f"  - Datetime column: {self.datetime_col}")
         print(f"  - Target column: {self.target}")
         print(f"  - Item ID column: {self.item_id_col if self.item_id_col else 'None'}")
-        print(f"  - Categorical columns: {self.categorical_cols}")
-        print(f"  - Numerical columns: {self.numerical_cols}")
+        print(f"  - Auto-generated features: {self.auto_generated_features}")
+        print(f"  - Additional categorical features: {[f for f in self.categorical_cols if f not in self.auto_generated_features]}")
+        print(f"  - Additional numerical features: {[f for f in self.numerical_cols if f not in self.auto_generated_features]}")
         
         return {
             'datetime_col': self.datetime_col,
@@ -258,8 +275,47 @@ class TimeSeriesForecaster:
             'item_id_col': self.item_id_col,
             'categorical_cols': self.categorical_cols,
             'numerical_cols': self.numerical_cols,
-            'features': self.features
+            'features': self.features,
+            'auto_generated_features': self.auto_generated_features
         }
+    
+    def _create_time_features(self):
+        """Create time-based features from datetime column."""
+        time_features = []
+        
+        # Add basic time features
+        self.data['hour'] = self.data[self.datetime_col].dt.hour
+        self.data['day'] = self.data[self.datetime_col].dt.day
+        self.data['month'] = self.data[self.datetime_col].dt.month
+        self.data['year'] = self.data[self.datetime_col].dt.year
+        self.data['dayofweek'] = self.data[self.datetime_col].dt.dayofweek
+        
+        time_features.extend(['hour', 'day', 'month', 'year', 'dayofweek'])
+        return time_features
+
+    def _create_lag_features(self):
+        """Create lag and rolling features for the target."""
+        lag_features = []
+        
+        # Create lag features
+        for lag in [1, 2, 3, 5, 7]:
+            lag_col = f'{self.target}_lag_{lag}'
+            self.data[lag_col] = self.data[self.target].shift(lag)
+            lag_features.append(lag_col)
+        
+        # Create rolling window features
+        for window in [3, 5, 7]:
+            # Rolling mean
+            mean_col = f'{self.target}_rolling_mean_{window}'
+            self.data[mean_col] = self.data[self.target].rolling(window=window).mean()
+            lag_features.append(mean_col)
+            
+            # Rolling std
+            std_col = f'{self.target}_rolling_std_{window}'
+            self.data[std_col] = self.data[self.target].rolling(window=window).std()
+            lag_features.append(std_col)
+        
+        return lag_features
     
     def visualize_data(self, visualization_type='all', n_samples=1000, specific_cols=None):
         """
@@ -465,122 +521,6 @@ class TimeSeriesForecaster:
                     print(f"Could not perform seasonal decomposition: {str(e)}")
         
         print("Visualizations saved to 'figures' directory.")
-    
-    def analyze_feature_importance(self, algorithm='random_forest', n_estimators=100, max_depth=10):
-        """
-        Analyze feature importance using the specified algorithm.
-        
-        Parameters:
-        -----------
-        algorithm : str
-            Algorithm to use for feature importance ('random_forest', 'xgboost', 'permutation')
-        n_estimators : int
-            Number of estimators for tree-based models
-        max_depth : int
-            Maximum depth for tree-based models
-            
-        Returns:
-        --------
-        pandas.DataFrame
-            DataFrame containing feature importance scores
-        """
-        if self.data is None:
-            print("Please load data first using load_data() method.")
-            return None
-        
-        if self.features is None or self.target is None:
-            print("Please define columns first using define_columns() method.")
-            return None
-        
-        print(f"Analyzing feature importance using {algorithm}...")
-        
-        # Prepare data
-        X = self.data[self.features].copy()
-        y = self.data[self.target].copy()
-        
-        # Handle categorical features
-        if self.categorical_cols:
-            for col in self.categorical_cols:
-                if col in X.columns:
-                    X[col] = X[col].astype('category')
-        
-        # Create preprocessor
-        numeric_transformer = Pipeline(steps=[
-            ('scaler', StandardScaler())
-        ])
-        
-        categorical_transformer = Pipeline(steps=[
-            ('onehot', OneHotEncoder(handle_unknown='ignore'))
-        ])
-        
-        preprocessor = ColumnTransformer(
-            transformers=[
-                ('num', numeric_transformer, self.numerical_cols),
-                ('cat', categorical_transformer, self.categorical_cols)
-            ])
-        
-        # Fit preprocessor
-        X_processed = preprocessor.fit_transform(X)
-        
-        # Get feature names after preprocessing
-        feature_names = []
-        
-        # Add numerical feature names
-        feature_names.extend(self.numerical_cols)
-        
-        # Add categorical feature names (with one-hot encoding)
-        if self.categorical_cols:
-            ohe = preprocessor.named_transformers_['cat'].named_steps['onehot']
-            cat_feature_names = ohe.get_feature_names_out(self.categorical_cols)
-            feature_names.extend(cat_feature_names)
-        
-        # Calculate feature importance
-        importance_df = None
-        
-        if algorithm == 'random_forest':
-            # Use Random Forest for feature importance
-            model = RandomForestRegressor(n_estimators=n_estimators, max_depth=max_depth, random_state=42)
-            model.fit(X_processed, y)
-            
-            # Get feature importance
-            importance = model.feature_importances_
-            importance_df = pd.DataFrame({'Feature': feature_names, 'Importance': importance})
-            importance_df = importance_df.sort_values('Importance', ascending=False)
-            
-        elif algorithm == 'xgboost':
-            # Use XGBoost for feature importance
-            model = xgb.XGBRegressor(n_estimators=n_estimators, max_depth=max_depth, random_state=42)
-            model.fit(X_processed, y)
-            
-            # Get feature importance
-            importance = model.feature_importances_
-            importance_df = pd.DataFrame({'Feature': feature_names, 'Importance': importance})
-            importance_df = importance_df.sort_values('Importance', ascending=False)
-            
-        elif algorithm == 'permutation':
-            # Use permutation importance
-            model = RandomForestRegressor(n_estimators=n_estimators, max_depth=max_depth, random_state=42)
-            model.fit(X_processed, y)
-            
-            # Calculate permutation importance
-            perm_importance = permutation_importance(model, X_processed, y, n_repeats=10, random_state=42)
-            
-            # Get feature importance
-            importance = perm_importance.importances_mean
-            importance_df = pd.DataFrame({'Feature': feature_names, 'Importance': importance})
-            importance_df = importance_df.sort_values('Importance', ascending=False)
-        
-        # Visualize feature importance
-        plt.figure(figsize=(12, 8))
-        sns.barplot(x='Importance', y='Feature', data=importance_df.head(20))
-        plt.title(f'Top 20 Feature Importance using {algorithm}')
-        plt.tight_layout()
-        plt.savefig('figures/feature_importance.png')
-        plt.close()
-        
-        self.feature_importance = importance_df
-        print("Feature importance analysis completed.")
-        return importance_df
     
     def define_algorithm(self, algorithm_name, hyperparameters=None):
         """

@@ -550,12 +550,43 @@ async def select_model(request: AlgorithmSelectionRequest):
             'GradientBoosting': 'Gradient Boosting builds an ensemble of sequential trees, each correcting the errors of its predecessors.'
         }
         
-        # Format hyperparameters
+        # Format hyperparameters with descriptions
         hyperparameters = {}
-        for param, value in model_params.items():
+        hyperparameter_descriptions = {
+            # KNN
+            'n_neighbors': 'Number of neighbors to consider for classification',
+            'weights': 'Weight function used in prediction',
+            'algorithm': 'Algorithm used to compute nearest neighbors',
+            'leaf_size': 'Leaf size passed to BallTree or KDTree',
+            'p': 'Power parameter for the Minkowski metric',
+            'metric': 'Distance metric to use for the tree',
+            
+            # SVM
+            'C': 'Regularization parameter. Smaller values specify stronger regularization',
+            'kernel': 'Kernel type to be used in the algorithm',
+            'degree': 'Degree of polynomial kernel function',
+            'gamma': 'Kernel coefficient for RBF, poly and sigmoid kernels',
+            'probability': 'Whether to enable probability estimates',
+            
+            # RandomForest
+            'n_estimators': 'Number of trees in the forest',
+            'criterion': 'Function to measure the quality of a split',
+            'max_depth': 'Maximum depth of the tree',
+            'min_samples_split': 'Minimum samples required to split an internal node',
+            'min_samples_leaf': 'Minimum samples required to be at a leaf node',
+            'max_features': 'Number of features to consider for best split',
+            
+            # Common
+            'random_state': 'Random number generator seed for reproducibility',
+            'subsample': 'Fraction of samples to be used for fitting the individual base learners',
+            'learning_rate': 'Step size shrinkage used in update to prevents overfitting',
+            'splitter': 'Strategy used to choose the split at each node'
+        }
+        
+        for param, param_info in model_params.items():
             hyperparameters[param] = {
-                'description': f"Parameter: {param}",
-                'suggested_values': [value]  # Use current value as suggestion
+                'description': hyperparameter_descriptions.get(param, f"Parameter: {param}"),
+                'suggested_values': param_info['suggested_values']
             }
         
         return AlgorithmSelectionResponse(
