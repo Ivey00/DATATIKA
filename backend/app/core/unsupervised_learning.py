@@ -40,136 +40,109 @@ class UnsupervisedModelTrainer:
         
         # Available algorithms
         self.algorithms = {
-            'K-Means': KMeans,
-            'DBSCAN': DBSCAN,
-            'Gaussian Mixture': GaussianMixture,
             'Isolation Forest': IsolationForest,
             'Local Outlier Factor': LocalOutlierFactor,
             'One-Class SVM': OneClassSVM,
-            'Agglomerative Clustering': AgglomerativeClustering,
         }
         
         self.algorithm_params = {
-            'K-Means': {
-                'n_clusters': {
-                    'default': 2,
-                    'description': 'Number of clusters to form'
-                },
-                'init': {
-                    'default': 'k-means++',
-                    'description': 'Method for initialization, either "k-means++" or "random"'
-                },
-                'n_init': {
-                    'default': 10,
-                    'description': 'Number of times the algorithm will be run with different centroid seeds'
-                },
-                'max_iter': {
-                    'default': 300,
-                    'description': 'Maximum number of iterations for a single run'
-                }
-            },
-            'DBSCAN': {
-                'eps': {
-                    'default': 0.5,
-                    'description': 'The maximum distance between two samples for one to be considered as in the neighborhood of the other'
-                },
-                'min_samples': {
-                    'default': 5,
-                    'description': 'The number of samples in a neighborhood for a point to be considered as a core point'
-                },
-                'metric': {
-                    'default': 'euclidean',
-                    'description': 'The metric to use when calculating distance between instances'
-                }
-            },
-            'Gaussian Mixture': {
-                'n_components': {
-                    'default': 2,
-                    'description': 'The number of mixture components'
-                },
-                'covariance_type': {
-                    'default': 'full',
-                    'description': 'Type of covariance parameters to use: "full", "tied", "diag", "spherical"'
-                },
-                'max_iter': {
-                    'default': 100,
-                    'description': 'The number of EM iterations to perform'
-                },
-                'random_state': {
-                    'default': 42,
-                    'description': 'Determines random number generation for component initialization'
-                }
-            },
             'Isolation Forest': {
                 'n_estimators': {
                     'default': 100,
-                    'description': 'The number of base estimators in the ensemble'
+                    'description': 'The number of base estimators in the ensemble',
+                    'suggested_values': [50, 100, 200, 500]
                 },
                 'contamination': {
                     'default': 'auto',
-                    'description': 'The proportion of outliers in the data set. Used when fitting to define the threshold on the scores of the samples'
+                    'description': 'The proportion of outliers in the data set',
+                    'suggested_values': ['auto', 0.1, 0.2, 0.3]
                 },
                 'max_samples': {
                     'default': 'auto',
-                    'description': 'The number of samples to draw from X to train each base estimator'
+                    'description': 'The number of samples to draw from X to train each base estimator',
+                    'suggested_values': ['auto', 100, 256, 512, 'all']
                 },
                 'random_state': {
                     'default': 42,
-                    'description': 'Determines random number generation for dataset shuffling and tree building'
+                    'description': 'Determines random number generation for dataset shuffling and tree building',
+                    'suggested_values': [None, 42, 0, 1, 123]
+                },
+                'max_features': {
+                    'default': 1.0,
+                    'description': 'The number of features to draw from X to train each base estimator',
+                    'suggested_values': [0.5, 0.8, 1.0, 'auto', 'sqrt', 'log2']
                 }
             },
             'Local Outlier Factor': {
                 'n_neighbors': {
                     'default': 20,
-                    'description': 'Number of neighbors to use by default for kneighbors queries'
+                    'description': 'Number of neighbors to use by default for kneighbors queries',
+                    'suggested_values': [5, 10, 20, 30, 50]
                 },
                 'algorithm': {
                     'default': 'auto',
-                    'description': 'Algorithm used to compute the nearest neighbors: "ball_tree", "kd_tree", "brute" or "auto"'
+                    'description': 'Algorithm used to compute the nearest neighbors',
+                    'suggested_values': ['auto', 'ball_tree', 'kd_tree', 'brute']
                 },
                 'leaf_size': {
                     'default': 30,
-                    'description': 'Leaf size passed to BallTree or KDTree'
+                    'description': 'Leaf size passed to BallTree or KDTree',
+                    'suggested_values': [10, 20, 30, 40, 50]
                 },
                 'metric': {
                     'default': 'minkowski',
-                    'description': 'Metric used for the distance computation'
+                    'description': 'Metric used for the distance computation',
+                    'suggested_values': ['minkowski', 'euclidean', 'manhattan', 'chebyshev']
                 },
                 'contamination': {
                     'default': 'auto',
-                    'description': 'The proportion of outliers in the data set'
+                    'description': 'The proportion of outliers in the data set',
+                    'suggested_values': ['auto', 0.1, 0.2, 0.3]
+                },
+                'p': {
+                    'default': 2,
+                    'description': 'Parameter for the Minkowski metric',
+                    'suggested_values': [1, 2, 3, 'inf']
                 }
             },
             'One-Class SVM': {
                 'kernel': {
                     'default': 'rbf',
-                    'description': 'Specifies the kernel type to be used in the algorithm: "linear", "poly", "rbf", "sigmoid"'
+                    'description': 'Specifies the kernel type to be used in the algorithm',
+                    'suggested_values': ['linear', 'poly', 'rbf', 'sigmoid']
                 },
                 'nu': {
                     'default': 0.5,
-                    'description': 'An upper bound on the fraction of training errors and a lower bound of the fraction of support vectors'
+                    'description': 'An upper bound on the fraction of training errors',
+                    'suggested_values': [0.1, 0.2, 0.3, 0.4, 0.5]
                 },
                 'gamma': {
                     'default': 'scale',
-                    'description': 'Kernel coefficient: "scale", "auto" or float value'
-                }
-            },
-            'Agglomerative Clustering': {
-                'n_clusters': {
-                    'default': 2,
-                    'description': 'The number of clusters to find'
+                    'description': 'Kernel coefficient',
+                    'suggested_values': ['scale', 'auto', 0.1, 0.01, 0.001]
                 },
-                'linkage': {
-                    'default': 'ward',
-                    'description': 'Which linkage criterion to use: "ward", "complete", "average", "single"'
+                'coef0': {
+                    'default': 0.0,
+                    'description': 'Independent term in kernel function. Only significant in poly and sigmoid',
+                    'suggested_values': [0.0, 0.1, 0.5, 1.0]
                 },
-                'affinity': {
-                    'default': 'euclidean',
-                    'description': 'Metric used to compute the linkage'
+                'degree': {
+                    'default': 3,
+                    'description': 'Degree of the polynomial kernel function',
+                    'suggested_values': [2, 3, 4, 5]
+                },
+                'shrinking': {
+                    'default': True,
+                    'description': 'Whether to use the shrinking heuristic',
+                    'suggested_values': [True, False]
+                },
+                'tol': {
+                    'default': 0.001,
+                    'description': 'Tolerance for stopping criterion',
+                    'suggested_values': [0.1, 0.01, 0.001, 0.0001]
                 }
             }
         }
-
     def load_data(self, file_path):
         """
         Load data from CSV or Excel file
