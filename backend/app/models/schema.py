@@ -83,7 +83,11 @@ class ComparisonRequest(CustomBaseModel):
 
 class ModelSaveRequest(BaseModel):
     model_name: str
-    save_directory: str
+    dataset_name: str  # Name of the dataset used for training
+    save_directory: str  # Directory where the model should be saved
+    hyperparameters: Dict[str, Any] = Field(default_factory=dict)  # Model hyperparameters
+    algorithm_name: str  # Name of the algorithm used
+    user_id: Optional[int] = None  # User ID from authentication
 
 # Response Models
 class DataImportResponse(CustomBaseModel):

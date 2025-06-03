@@ -63,7 +63,10 @@ interface Prediction {
 
 interface ModelSaveRequest {
   model_name: string;
+  dataset_name: string;
   save_directory: string;
+  hyperparameters: { [key: string]: any };
+  algorithm_name: string;
 }
 
 // Main component
@@ -140,6 +143,7 @@ export default function NumericalClassifier() {
         headers: {
           'Content-Type': 'application/json'
         },
+        credentials: 'include',
         body: JSON.stringify({
           file_content: fileContent,
           file_name: file.name
@@ -207,7 +211,9 @@ export default function NumericalClassifier() {
   // Function to fetch column info
   const fetchColumnInfo = async () => {
     try {
-      const response = await fetch('/api/numerical-classifier/column-info');
+      const response = await fetch('/api/numerical-classifier/column-info', {
+        credentials: 'include'
+      });
       const data = await response.json();
       
       if (data.column_info) {
@@ -239,6 +245,7 @@ export default function NumericalClassifier() {
         headers: {
           'Content-Type': 'application/json'
         },
+        credentials: 'include',
         body: JSON.stringify({
           features: featureDefinition.features,
           target: featureDefinition.target,
@@ -306,6 +313,7 @@ export default function NumericalClassifier() {
         headers: {
           'Content-Type': 'application/json'
         },
+        credentials: 'include',
         body: JSON.stringify({
           algorithm_name: algorithm
         })
@@ -363,6 +371,7 @@ export default function NumericalClassifier() {
         headers: {
           'Content-Type': 'application/json'
         },
+        credentials: 'include',
         body: JSON.stringify({
           hyperparameters: hyperparameters
         })
@@ -405,7 +414,7 @@ export default function NumericalClassifier() {
     
     try {
       // Start the training process
-      const response = await apiRequestWithRetry('/api/numerical-classifier/train-model', {
+      const response = await apiRequest('/api/numerical-classifier/train-model', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -541,7 +550,7 @@ export default function NumericalClassifier() {
     throw lastError;
   };
 
-  // Add the fetchEvaluationResults function
+  // Function to fetch evaluation results
   const fetchEvaluationResults = async () => {
     try {
       const response = await apiRequestWithRetry('/api/numerical-classifier/evaluate-model');
@@ -612,6 +621,7 @@ export default function NumericalClassifier() {
         headers: {
           'Content-Type': 'application/json'
         },
+        credentials: 'include',
         body: JSON.stringify({
           file_content: fileContent,
           file_name: predictionFile.name
@@ -732,7 +742,11 @@ export default function NumericalClassifier() {
         },
         body: JSON.stringify({
           model_name: modelName,
-          save_directory: saveDirectory
+          dataset_name: dataFile?.name || "unknown_dataset",
+          save_directory: saveDirectory,
+          hyperparameters: hyperparameters,
+          algorithm_name: selectedAlgorithm,
+          metrics: evaluation?.metrics || null
         })
       });
 

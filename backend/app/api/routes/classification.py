@@ -13,6 +13,7 @@ from io import BytesIO
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix
 import asyncio
+from sqlalchemy.orm import Session
 
 from app.core.classification import Classification
 from app.models.schema import (
@@ -34,6 +35,9 @@ from app.models.schema import (
     convert_to_native_types,
     ModelSaveRequest
 )
+from ..routes.auth import get_current_user
+from ...db.models import User, TrainedModel
+from ...db.database import get_db
 
 router = APIRouter()
 
@@ -110,10 +114,18 @@ def fig_to_base64(fig):
     return img_str
 
 @router.post("/import-data", response_model=DataImportResponse)
-async def import_data(request: DataImportRequest):
+async def import_data(
+    request: DataImportRequest,
+    current_user: User = Depends(get_current_user)
+):
     """
     Import data from a CSV or Excel file.
     """
+    if not current_user:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated"
+        )
     try:
         # Decode base64 file content
         file_content = base64.b64decode(request.file_content)
@@ -164,10 +176,17 @@ async def import_data(request: DataImportRequest):
         )
 
 @router.get("/column-info", response_model=ColumnInfoResponse)
-async def get_column_info():
+async def get_column_info(
+    current_user: User = Depends(get_current_user)
+):
     """
     Get information about columns in the dataset.
     """
+    if not current_user:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated"
+        )
     try:
         column_info = classification_system.get_column_info()
         
@@ -190,10 +209,18 @@ async def get_column_info():
         )
 
 @router.post("/define-features", response_model=FeatureDefinitionResponse)
-async def define_features(request: FeatureDefinitionRequest):
+async def define_features(
+    request: FeatureDefinitionRequest,
+    current_user: User = Depends(get_current_user)
+):
     """
     Define the features and target for the model.
     """
+    if not current_user:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated"
+        )
     try:
         X, y = classification_system.define_features_target(
             features=request.features,
@@ -389,10 +416,18 @@ async def visualize_data(max_features: Optional[int] = 10):
         )
 
 @router.post("/select-algorithm", response_model=AlgorithmSelectionResponse)
-async def select_algorithm(request: AlgorithmSelectionRequest):
+async def select_algorithm(
+    request: AlgorithmSelectionRequest,
+    current_user: User = Depends(get_current_user)
+):
     """
-    Select and configure the classification algorithm.
+    Select the classification algorithm.
     """
+    if not current_user:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated"
+        )
     try:
         model_info = classification_system.select_algorithm(request.algorithm_name)
         
@@ -435,10 +470,18 @@ async def select_algorithm(request: AlgorithmSelectionRequest):
         )
 
 @router.post("/configure-hyperparameters", response_model=HyperparameterConfigResponse)
-async def configure_hyperparameters(request: HyperparameterConfigRequest):
+async def configure_hyperparameters(
+    request: HyperparameterConfigRequest,
+    current_user: User = Depends(get_current_user)
+):
     """
     Configure hyperparameters for the selected algorithm.
     """
+    if not current_user:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated"
+        )
     try:
         model = classification_system.configure_hyperparameters(request.hyperparameters)
         
@@ -494,10 +537,18 @@ async def preprocess_data():
         )
 
 @router.post("/train-model", response_model=TrainingResponse)
-async def train_model(background_tasks: BackgroundTasks):
+async def train_model(
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user)
+):
     """
-    Train the model asynchronously.
+    Train the model with the configured settings.
     """
+    if not current_user:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated"
+        )
     try:
         # Reset training state
         reset_training_state()
@@ -535,10 +586,17 @@ async def check_progress():
     }
 
 @router.get("/evaluate-model", response_model=EvaluationResponse)
-async def evaluate_model():
+async def evaluate_model(
+    current_user: User = Depends(get_current_user)
+):
     """
-    Evaluate the trained model on the test set.
+    Get evaluation metrics for the trained model.
     """
+    if not current_user:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated"
+        )
     try:
         # Redirect matplotlib output to capture visualizations
         plt.switch_backend('Agg')
@@ -811,11 +869,23 @@ async def perform_grid_search(request: GridSearchRequest):
         )
 
 @router.post("/save-model", response_model=ModelSaveResponse)
-async def save_model(request: ModelSaveRequest):
+async def save_model(
+    request: ModelSaveRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
-    Save the trained model to disk.
+    Save the trained model.
     """
+    if not current_user:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated"
+        )
     try:
+        # Add user_id to the request
+        request.user_id = current_user.id
+        
         if not classification_system.trained_model:
             return ModelSaveResponse(
                 success=False,
@@ -823,12 +893,16 @@ async def save_model(request: ModelSaveRequest):
                 model_path="",
                 timestamp=""
             )
-        
+
         # Create directory if it doesn't exist
         os.makedirs(request.save_directory, exist_ok=True)
         
         # Save the model
-        model_path = classification_system.save_model(request.save_directory)
+        model_path = classification_system.save_model(
+            directory=request.save_directory,
+            model_name=request.model_name,
+            dataset_name=request.dataset_name
+        )
         
         if not model_path:
             return ModelSaveResponse(
@@ -837,12 +911,29 @@ async def save_model(request: ModelSaveRequest):
                 model_path="",
                 timestamp=""
             )
+            
+        # Get current timestamp
+        timestamp = datetime.now().isoformat()
+        
+        # Save model metadata to database
+        db_model = TrainedModel(
+            user_id=current_user.id,  # Add user_id here
+            name=request.model_name,
+            model_type=request.algorithm_name,
+            dataset_name=request.dataset_name,
+            model_path=model_path,
+            metrics=classification_system.evaluation_metrics if hasattr(classification_system, 'evaluation_metrics') else None,
+            hyperparameters=request.hyperparameters
+        )
+        
+        db.add(db_model)
+        db.commit()
         
         return ModelSaveResponse(
             success=True,
             message="Model saved successfully",
             model_path=model_path,
-            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp=timestamp
         )
         
     except Exception as e:

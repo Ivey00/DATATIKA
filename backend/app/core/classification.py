@@ -56,6 +56,7 @@ class Classification:
         self.item_id_column = None
         self.item_filter = None
         self.datetime_column = None  # Initialize datetime_column as None
+        self.evaluation_metrics = None  # Store evaluation metrics
         self.supported_algorithms = {
             'logistic_regression': {
                 'model': LogisticRegression(),
@@ -640,6 +641,9 @@ class Classification:
             'f1': f1_score(self.y_test, y_pred, average='weighted')
         }
         
+        # Store metrics for later use
+        self.evaluation_metrics = metrics
+        
         # Print metrics
         print("\nModel Performance Metrics:")
         print(f"Accuracy: {metrics['accuracy']:.4f}")
@@ -848,7 +852,7 @@ class Classification:
         
         return metrics
     
-    def save_model(self, directory="models"):
+    def save_model(self, directory="models", model_name=None, dataset_name=None):
         """
         Save the trained model and preprocessor to disk.
         
@@ -856,6 +860,10 @@ class Classification:
         -----------
         directory : str
             Directory to save the model in.
+        model_name : str, optional
+            Name to use for the saved model.
+        dataset_name : str, optional
+            Name of the dataset used for training.
             
         Returns:
         --------
@@ -875,31 +883,41 @@ class Classification:
         
         # Generate a timestamp for the model name
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        model_name = f"{self.model['model'].__class__.__name__}_{timestamp}"
+        base_name = model_name or f"{self.model['model'].__class__.__name__}"
+        file_name = f"{base_name}_{timestamp}"
         
         # Save model
-        model_path = os.path.join(directory, f"{model_name}_model.pkl")
+        model_path = os.path.join(directory, f"{file_name}_model.pkl")
         with open(model_path, 'wb') as f:
             pickle.dump(self.trained_model, f)
         
         # Save preprocessor
-        preprocessor_path = os.path.join(directory, f"{model_name}_preprocessor.pkl")
+        preprocessor_path = os.path.join(directory, f"{file_name}_preprocessor.pkl")
         with open(preprocessor_path, 'wb') as f:
             pickle.dump(self.preprocessor, f)
+        
+        # Get evaluation metrics if available
+        metrics = None
+        if hasattr(self, 'evaluation_metrics'):
+            metrics = self.evaluation_metrics
         
         # Save metadata
         metadata = {
             'model_class': self.model['model'].__class__.__name__,
+            'model_type': 'classification',  # For database schema
+            'dataset_name': dataset_name,
             'features': self.features,
             'target': self.target,
             'numerical_features': self.numerical_features,
             'categorical_features': self.categorical_features,
             'item_id_column': self.item_id_column,
             'item_filter': self.item_filter,
-            'hyperparameters': self.trained_model.get_params()
+            'hyperparameters': self.trained_model.get_params(),
+            'metrics': metrics,
+            'created_at': timestamp
         }
         
-        metadata_path = os.path.join(directory, f"{model_name}_metadata.pkl")
+        metadata_path = os.path.join(directory, f"{file_name}_metadata.pkl")
         with open(metadata_path, 'wb') as f:
             pickle.dump(metadata, f)
         

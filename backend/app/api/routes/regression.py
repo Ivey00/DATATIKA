@@ -6,7 +6,8 @@ import tempfile
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response, Query
+from fastapi.responses import FileResponse
 from typing import Dict, Any, List, Optional
 import json
 from io import BytesIO
@@ -16,6 +17,7 @@ from aiohttp import ClientTimeout, TCPConnector
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import logging
+from pathlib import Path
 
 from app.core.regression import Regression
 from app.models.schema import (
@@ -37,6 +39,12 @@ from app.models.schema import (
     ErrorResponse,
     convert_to_native_types
 )
+
+from app.db.database import get_db
+from app.db.models import TrainedModel
+from sqlalchemy.orm import Session
+from app.api.routes.auth import get_current_user
+from app.db.models import User
 
 router = APIRouter()
 
@@ -1186,10 +1194,17 @@ async def perform_grid_search(request: GridSearchRequest):
             search_time=0.0
         )
 
+# Define models directory
+MODELS_DIR = Path("saved_models")
+
 @router.post("/save-model", response_model=ModelSaveResponse)
-async def save_model(request: ModelSaveRequest):
+async def save_model(
+    request: ModelSaveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
-    Save the trained model and preprocessor to disk.
+    Save the trained model and its metadata to disk and database.
     """
     try:
         if regression_system.trained_model is None:
@@ -1199,30 +1214,57 @@ async def save_model(request: ModelSaveRequest):
                 model_path="",
                 timestamp=""
             )
+
+        if not current_user:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication required to save model"
+            )
+
+        # Generate safe filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_model_name = "".join(c for c in request.model_name if c.isalnum() or c in ('-', '_')).rstrip()
+        filename = f"{safe_model_name}_{timestamp}.joblib"
         
-        # Use the user-specified directory and model name
-        directory = request.save_directory
-        model_name = request.model_name
+        # Use the user's specified save path
+        save_path = Path(request.save_directory)
         
         # Create directory if it doesn't exist
-        os.makedirs(directory, exist_ok=True)
+        save_path.mkdir(parents=True, exist_ok=True)
         
-        # Generate filename with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{model_name}_{timestamp}.joblib"
-        filepath = os.path.join(directory, filename)
-        
+        # Full path for the model file
+        model_path = str(save_path / filename)
+
         # Save model
-        regression_system.save_model(filepath)
-        
+        regression_system.save_model(model_path)
+
+        # Create database entry with hyperparameters
+        db_model = TrainedModel(
+            user_id=current_user.id,
+            name=request.model_name,
+            model_type="target_prediction",
+            dataset_name=request.dataset_name,
+            model_path=model_path,
+            metrics=regression_system.last_evaluation if hasattr(regression_system, 'last_evaluation') else None,
+            hyperparameters={
+                "algorithm": request.algorithm_name,
+                "parameters": request.hyperparameters
+            }
+        )
+
+        db.add(db_model)
+        db.commit()
+        db.refresh(db_model)
+
         return ModelSaveResponse(
             success=True,
             message="Model saved successfully",
-            model_path=filepath,
+            model_path=model_path,
             timestamp=datetime.now().isoformat()
         )
-        
+
     except Exception as e:
+        db.rollback()
         return ModelSaveResponse(
             success=False,
             message=f"Error saving model: {str(e)}",
@@ -1260,3 +1302,56 @@ async def shutdown_event():
         logger.error(f"Error during shutdown: {str(e)}")
     finally:
         session = None
+
+@router.get("/download-model")
+async def download_model(
+    path: str = Query(..., description="Path to the saved model file"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Download a saved model file.
+    """
+    try:
+        if not current_user:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication required to download model"
+            )
+
+        # Convert path to Path object for safer path handling
+        model_path = Path(path)
+
+        # Check if the model exists in the database for this user
+        model = db.query(TrainedModel).filter(
+            TrainedModel.user_id == current_user.id,
+            TrainedModel.model_path == str(model_path)
+        ).first()
+
+        if not model:
+            raise HTTPException(
+                status_code=404,
+                detail="Model not found or you don't have permission to access it"
+            )
+
+        # Check if the file exists
+        if not model_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="Model file not found"
+            )
+
+        # Return the file
+        return FileResponse(
+            path=str(model_path),
+            filename=model_path.name,
+            media_type="application/octet-stream"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error downloading model: {str(e)}"
+        )

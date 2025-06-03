@@ -61,7 +61,10 @@ interface Prediction {
 
 interface ModelSaveRequest {
   model_name: string;
+  dataset_name: string;
   save_directory: string;
+  hyperparameters: {[key: string]: any};
+  algorithm_name: string;
 }
 
 // Main component
@@ -773,14 +776,28 @@ export default function TargetPrediction() {
     if (!modelName || !saveDirectory) {
       toast({
         title: "Missing information",
-        description: "Please provide both model name and save directory",
+        description: "Please provide both model name and save location",
         variant: "destructive"
       });
       return;
     }
 
-    setLoading(true);
     try {
+      const datasetName = dataFile?.name || "unknown_dataset";
+
+      // Prepare hyperparameters data
+      const currentHyperparameters = algorithmInfo ? Object.fromEntries(
+        Object.entries(hyperparameters).map(([key, value]) => {
+          // Convert string values to appropriate types
+          if (value === "null" || value === "None") return [key, null];
+          if (value === "true" || value === "True") return [key, true];
+          if (value === "false" || value === "False") return [key, false];
+          if (!isNaN(Number(value))) return [key, Number(value)];
+          return [key, value];
+        })
+      ) : {};
+
+      setLoading(true);
       const data = await apiRequest('/api/target-prediction/save-model', {
         method: 'POST',
         headers: {
@@ -788,8 +805,11 @@ export default function TargetPrediction() {
         },
         body: JSON.stringify({
           model_name: modelName,
-          save_directory: saveDirectory
-        })
+          dataset_name: datasetName,
+          save_directory: saveDirectory,
+          hyperparameters: currentHyperparameters,
+          algorithm_name: selectedAlgorithm
+        } as ModelSaveRequest)
       });
 
       if (data.success) {
@@ -809,7 +829,7 @@ export default function TargetPrediction() {
       console.error("Error saving model:", error);
       toast({
         title: "Error saving model",
-        description: "An unexpected error occurred",
+        description: error instanceof Error ? error.message : "An unexpected error occurred",
         variant: "destructive"
       });
     } finally {
@@ -1591,7 +1611,7 @@ export default function TargetPrediction() {
               <CardHeader>
                 <CardTitle>Save Model</CardTitle>
                 <CardDescription>
-                  Enter a name for your model and specify the save directory path
+                  Enter a name for your model and specify the save location.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -1610,16 +1630,16 @@ export default function TargetPrediction() {
                     </p>
                   </div>
                   <div>
-                    <Label htmlFor="saveDirectory">Save Directory Path</Label>
+                    <Label htmlFor="saveDirectory">Save Location</Label>
                     <Input
                       id="saveDirectory"
                       value={saveDirectory}
                       onChange={(e) => setSaveDirectory(e.target.value)}
-                      placeholder="/path/to/save/directory"
+                      placeholder="C:/Users/username/models"
                       className="border-tertiary"
                     />
                     <p className="text-sm text-foreground/70 mt-1">
-                      Full path where you want to save the model (e.g., C:/Users/name/models)
+                      Full path where you want to save the model
                     </p>
                   </div>
                 </div>
