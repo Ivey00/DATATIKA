@@ -6,12 +6,13 @@ import tempfile
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from typing import Dict, Any, List, Optional
 import json
 from io import BytesIO
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix
+import asyncio
 
 from app.core.classification import Classification
 from app.models.schema import (
@@ -20,7 +21,6 @@ from app.models.schema import (
     FeatureDefinitionRequest, FeatureDefinitionResponse,
     ItemFilterRequest, ItemFilterResponse,
     VisualizationResponse,
-    FeatureImportanceResponse,
     AlgorithmSelectionRequest, AlgorithmSelectionResponse,
     HyperparameterConfigRequest, HyperparameterConfigResponse,
     PreprocessResponse,
@@ -31,7 +31,8 @@ from app.models.schema import (
     GridSearchRequest, GridSearchResponse,
     ModelSaveResponse,
     ErrorResponse,
-    convert_to_native_types
+    convert_to_native_types,
+    ModelSaveRequest
 )
 
 router = APIRouter()
@@ -40,6 +41,63 @@ router = APIRouter()
 # In a production environment, this would be handled differently
 # with a database to store session state
 classification_system = Classification()
+
+# Add training state variables
+training_progress = 0
+training_message = "Not started"
+training_complete = False
+training_error = None
+is_training = False
+
+def reset_training_state():
+    global training_progress, training_message, training_complete, training_error, is_training
+    training_progress = 0
+    training_message = "Not started"
+    training_complete = False
+    training_error = None
+    is_training = False
+
+async def train_model_task():
+    """Background task for model training"""
+    global training_progress, training_message, training_complete, training_error, is_training
+    
+    try:
+        is_training = True
+        training_message = "Preprocessing data..."
+        training_progress = 10
+        
+        # Preprocess data
+        X_train, X_test, y_train, y_test = classification_system.preprocess_data()
+        if X_train is None:
+            raise Exception("Failed to preprocess data")
+        
+        await asyncio.sleep(1)  # Simulate some work
+        training_progress = 40
+        training_message = "Training model..."
+        
+        # Train model
+        model = classification_system.train_model()
+        if model is None:
+            raise Exception("Failed to train model")
+        
+        await asyncio.sleep(1)  # Simulate some work
+        training_progress = 70
+        training_message = "Evaluating model..."
+        
+        # Evaluate model
+        metrics = classification_system.evaluate_model()
+        if metrics is None:
+            raise Exception("Failed to evaluate model")
+        
+        training_progress = 100
+        training_message = "Training complete!"
+        training_complete = True
+        
+    except Exception as e:
+        training_error = str(e)
+        training_message = f"Error: {str(e)}"
+    finally:
+        is_training = False
 
 def fig_to_base64(fig):
     """Convert a matplotlib figure to base64 encoded string."""
@@ -145,40 +203,42 @@ async def define_features(request: FeatureDefinitionRequest):
             item_id_column=request.item_id_column
         )
         
-        # Store datetime column for time-based visualizations
+        # Store datetime column for time-based visualizations if provided
         classification_system.datetime_column = request.datetime_column
         
         if X is None or y is None:
             return FeatureDefinitionResponse(
                 success=False,
-                message="Failed to define features and target. Please import data first.",
-                features=request.features,
-                target=request.target,
-                categorical_features=request.categorical_features or [],
-                numerical_features=request.numerical_features or [],
-                datetime_column=request.datetime_column
+                message="Failed to define features and target",
+                features=[],
+                target="",
+                categorical_features=[],
+                numerical_features=[],
+                datetime_column=None,
+                item_id_column=None
             )
         
         return FeatureDefinitionResponse(
             success=True,
             message="Features and target defined successfully",
-            features=classification_system.features,
-            target=classification_system.target,
-            categorical_features=classification_system.categorical_features,
-            numerical_features=classification_system.numerical_features,
-            item_id_column=classification_system.item_id_column,
-            datetime_column=request.datetime_column
+            features=request.features,
+            target=request.target,
+            categorical_features=request.categorical_features or [],
+            numerical_features=request.numerical_features or [],
+            datetime_column=request.datetime_column,
+            item_id_column=request.item_id_column
         )
         
     except Exception as e:
         return FeatureDefinitionResponse(
             success=False,
             message=f"Error defining features and target: {str(e)}",
-            features=request.features,
-            target=request.target,
-            categorical_features=request.categorical_features or [],
-            numerical_features=request.numerical_features or [],
-            datetime_column=request.datetime_column
+            features=[],
+            target="",
+            categorical_features=[],
+            numerical_features=[],
+            datetime_column=None,
+            item_id_column=None
         )
 
 @router.post("/filter-by-item", response_model=ItemFilterResponse)
@@ -328,61 +388,6 @@ async def visualize_data(max_features: Optional[int] = 10):
             visualizations={}
         )
 
-@router.get("/analyze-feature-importance", response_model=FeatureImportanceResponse)
-async def analyze_feature_importance(
-    method: str = "random_forest",
-    n_estimators: int = 100,
-    max_depth: Optional[int] = None
-):
-    """
-    Analyze the importance of features using the specified method.
-    """
-    try:
-        # Redirect matplotlib output to capture visualizations
-        plt.switch_backend('Agg')
-        
-        try:
-            importance_df = classification_system.analyze_feature_importance(
-                method=method,
-                n_estimators=n_estimators,
-                max_depth=max_depth
-            )
-            
-            if importance_df is None:
-                return FeatureImportanceResponse(
-                    success=False,
-                    message="Features and target not defined. Please define features and target first.",
-                    importance_data=[],
-                    visualization=""
-                )
-            
-            # Create visualization
-            fig = plt.figure(figsize=(10, 8))
-            sns.barplot(x='Importance', y='Feature', data=importance_df)
-            plt.title(f'Feature Importance using {method.replace("_", " ").title()}')
-            plt.tight_layout()
-            
-            visualization = fig_to_base64(fig)
-            
-            return FeatureImportanceResponse(
-                success=True,
-                message="Feature importance analyzed successfully",
-                importance_data=convert_to_native_types(importance_df.to_dict(orient='records')),
-                visualization=visualization
-            )
-            
-        finally:
-            # Clean up
-            plt.close('all')
-            
-    except Exception as e:
-        return FeatureImportanceResponse(
-            success=False,
-            message=f"Error analyzing feature importance: {str(e)}",
-            importance_data=[],
-            visualization=""
-        )
-
 @router.post("/select-algorithm", response_model=AlgorithmSelectionResponse)
 async def select_algorithm(request: AlgorithmSelectionRequest):
     """
@@ -488,43 +493,46 @@ async def preprocess_data():
             test_shape=[0, 0]
         )
 
-@router.get("/train-model", response_model=TrainingResponse)
-async def train_model(cross_validate: bool = True, cv: int = 5):
+@router.post("/train-model", response_model=TrainingResponse)
+async def train_model(background_tasks: BackgroundTasks):
     """
-    Train the model with the selected algorithm and configured hyperparameters.
+    Train the model asynchronously.
     """
     try:
-        model = classification_system.train_model(cross_validate=cross_validate, cv=cv)
+        # Reset training state
+        reset_training_state()
         
-        if model is None:
-            return TrainingResponse(
-                success=False,
-                message="No algorithm selected or data not preprocessed. Please select an algorithm and preprocess the data first.",
-                training_time=0.0
-            )
-        
-        # Get cross-validation results if performed
-        cv_results = None
-        if cross_validate and hasattr(model, 'cv_results_'):
-            cv_results = {
-                'scores': model.cv_results_['mean_test_score'].tolist(),
-                'mean': float(np.mean(model.cv_results_['mean_test_score'])),
-                'std': float(np.std(model.cv_results_['mean_test_score']))
-            }
+        # Start training in background
+        background_tasks.add_task(train_model_task)
         
         return TrainingResponse(
             success=True,
-            message="Model trained successfully",
-            training_time=0.0,  # We don't have the actual training time here
-            cross_validation=cv_results
+            message="Model training started",
+            training_time=0,
+            cross_validation=None
         )
         
     except Exception as e:
         return TrainingResponse(
             success=False,
-            message=f"Error training model: {str(e)}",
-            training_time=0.0
+            message=f"Error starting model training: {str(e)}",
+            training_time=0,
+            cross_validation=None
         )
+
+@router.get("/check-progress")
+async def check_progress():
+    """
+    Check the progress of model training.
+    """
+    return {
+        "success": True,
+        "progress": training_progress,
+        "message": training_message,
+        "is_complete": training_complete,
+        "task_running": is_training,
+        "error": training_error
+    }
 
 @router.get("/evaluate-model", response_model=EvaluationResponse)
 async def evaluate_model():
@@ -802,18 +810,30 @@ async def perform_grid_search(request: GridSearchRequest):
             search_time=0.0
         )
 
-@router.get("/save-model", response_model=ModelSaveResponse)
-async def save_model(directory: str = "models"):
+@router.post("/save-model", response_model=ModelSaveResponse)
+async def save_model(request: ModelSaveRequest):
     """
-    Save the trained model and preprocessor to disk.
+    Save the trained model to disk.
     """
     try:
-        model_path = classification_system.save_model(directory)
-        
-        if model_path is None:
+        if not classification_system.trained_model:
             return ModelSaveResponse(
                 success=False,
                 message="No trained model available. Please train a model first.",
+                model_path="",
+                timestamp=""
+            )
+        
+        # Create directory if it doesn't exist
+        os.makedirs(request.save_directory, exist_ok=True)
+        
+        # Save the model
+        model_path = classification_system.save_model(request.save_directory)
+        
+        if not model_path:
+            return ModelSaveResponse(
+                success=False,
+                message="Failed to save model",
                 model_path="",
                 timestamp=""
             )
@@ -822,7 +842,7 @@ async def save_model(directory: str = "models"):
             success=True,
             message="Model saved successfully",
             model_path=model_path,
-            timestamp=datetime.now().isoformat()
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )
         
     except Exception as e:

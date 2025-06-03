@@ -30,7 +30,6 @@ class Classification:
     This system provides functionality for:
     - Data import (.csv and .excel)
     - Feature selection and visualization
-    - Feature importance analysis
     - Algorithm selection and hyperparameter tuning
     - Data preprocessing
     - Model training
@@ -56,6 +55,7 @@ class Classification:
         self.numerical_features = []
         self.item_id_column = None
         self.item_filter = None
+        self.datetime_column = None  # Initialize datetime_column as None
         self.supported_algorithms = {
             'logistic_regression': {
                 'model': LogisticRegression(),
@@ -436,107 +436,6 @@ class Classification:
         plt.xlabel(self.target)
         plt.tight_layout()
         plt.show()
-    
-    def analyze_feature_importance(self, method='random_forest', n_estimators=100, max_depth=None):
-        """
-        Analyze the importance of features using the specified method.
-        
-        Parameters:
-        -----------
-        method : str, optional
-            Method to use for feature importance analysis. Options: 'random_forest', 'decision_tree'
-        n_estimators : int, optional
-            Number of trees for random forest. Ignored if method is not 'random_forest'.
-        max_depth : int, optional
-            Maximum depth of the trees.
-            
-        Returns:
-        --------
-        pandas.Series
-            Feature importance scores.
-        """
-        if self.X is None or self.y is None:
-            print("Features and target not defined. Please define features and target first.")
-            return None
-        
-        print("\nAnalyzing feature importance...")
-        
-        # Create preprocessor for the analysis
-        num_transformer = Pipeline(steps=[
-            ('imputer', SimpleImputer(strategy='median')),
-            ('scaler', StandardScaler())
-        ])
-        
-        cat_transformer = Pipeline(steps=[
-            ('imputer', SimpleImputer(strategy='most_frequent')),
-            ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
-        ])
-        
-        preprocessor = ColumnTransformer(
-            transformers=[
-                ('num', num_transformer, self.numerical_features),
-                ('cat', cat_transformer, self.categorical_features)
-            ])
-        
-        # Get feature names after preprocessing
-        # This is a bit complex due to onehotencoding
-        cat_feature_names = []
-        if self.categorical_features:
-            # Fit the preprocessor on a small sample to get transformed feature names
-            preprocessor.fit(self.X.head())
-            
-            # Get the one-hot encoder from the preprocessor
-            ohe = preprocessor.named_transformers_['cat'].named_steps['onehot']
-            
-            # Get the one-hot encoded feature names
-            cat_feature_names = list(ohe.get_feature_names_out(self.categorical_features))
-        
-        # Combine with numerical feature names
-        feature_names = self.numerical_features + cat_feature_names
-        
-        # Preprocess the data
-        X_processed = preprocessor.fit_transform(self.X)
-        
-        # Train the model for feature importance
-        if method == 'random_forest':
-            model = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth, random_state=42)
-        elif method == 'decision_tree':
-            model = DecisionTreeClassifier(max_depth=max_depth, random_state=42)
-        else:
-            print(f"Method '{method}' not supported. Using 'random_forest' instead.")
-            model = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth, random_state=42)
-        
-        model.fit(X_processed, self.y)
-        
-        # Get feature importances
-        importances = model.feature_importances_
-        
-        # If there are fewer importance values than feature names (can happen with low cardinality cat features)
-        if len(importances) < len(feature_names):
-            print("Warning: Number of feature importances does not match number of feature names.")
-            # Use only the available feature names
-            feature_names = feature_names[:len(importances)]
-        elif len(importances) > len(feature_names):
-            print("Warning: More feature importances than feature names. Using only the first ones.")
-            importances = importances[:len(feature_names)]
-        
-        # Create a DataFrame to display importances
-        importance_df = pd.DataFrame({
-            'Feature': feature_names,
-            'Importance': importances
-        }).sort_values(by='Importance', ascending=False)
-        
-        print("\nFeature Importance:")
-        print(importance_df)
-        
-        # Visualize feature importance
-        plt.figure(figsize=(10, 8))
-        sns.barplot(x='Importance', y='Feature', data=importance_df)
-        plt.title(f'Feature Importance using {method.replace("_", " ").title()}')
-        plt.tight_layout()
-        plt.show()
-        
-        return importance_df
     
     def select_algorithm(self, algorithm_name):
         """
