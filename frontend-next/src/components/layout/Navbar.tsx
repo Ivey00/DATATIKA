@@ -1,16 +1,64 @@
 "use client";
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { LayoutDashboard, BarChart, ActivitySquare, Clock, Image } from 'lucide-react';
+import { usePathname, useRouter } from 'next/navigation';
+import { LayoutDashboard, BarChart, ActivitySquare, Clock, Image, LogOut, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useIsMobile } from '@/hooks/use-mobile';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
 
 const Navbar = () => {
   const isMobile = useIsMobile();
   const pathname = usePathname();
-  
+  const router = useRouter();
+  const [user, setUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const response = await fetch('http://localhost:8000/api/auth/me', {
+          credentials: 'include',
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setUser(data.user);
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    checkAuth();
+  }, []);
+
+  const handleSignOut = async () => {
+    try {
+      await fetch('http://localhost:8000/api/auth/signout', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      setUser(null);
+      router.push('/');
+    } catch (error) {
+      console.error('Sign out failed:', error);
+    }
+  };
+
   const navItems = [
     { 
       name: 'Dashboard', 
@@ -49,7 +97,11 @@ const Navbar = () => {
       <div className="container mx-auto px-4 py-3">
         <div className="flex justify-between items-center">
           <div className="flex items-center">
-            <h1 className="text-2xl font-bold text-primary hover:text-secondary transition-colors cursor-pointer">DATATIKA</h1>
+            <Link href="/">
+              <h1 className="text-2xl font-bold text-primary hover:text-secondary transition-colors cursor-pointer">
+                DATATIKA
+              </h1>
+            </Link>
           </div>
           
           {!isMobile && (
@@ -74,10 +126,37 @@ const Navbar = () => {
             </div>
           )}
           
-          <div>
-            <Button variant="secondary" size="sm">
-              Sign In
-            </Button>
+          <div className="flex items-center gap-4">
+            {!isLoading && (
+              user ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button 
+                      variant="ghost" 
+                      className="flex items-center gap-2 hover:bg-secondary"
+                    >
+                      <User className="h-5 w-5" />
+                      <span className="font-medium">{user.name}</span>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-48">
+                    <DropdownMenuItem 
+                      className="text-destructive focus:text-destructive cursor-pointer"
+                      onClick={handleSignOut}
+                    >
+                      <LogOut className="h-4 w-4 mr-2" />
+                      Sign Out
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : (
+                <Link href="/signin">
+                  <Button variant="secondary" size="sm">
+                    Sign In
+                  </Button>
+                </Link>
+              )
+            )}
           </div>
         </div>
       </div>
