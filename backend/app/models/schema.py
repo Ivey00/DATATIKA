@@ -56,10 +56,10 @@ class DataImportRequest(CustomBaseModel):
 class FeatureDefinitionRequest(CustomBaseModel):
     features: List[str] = Field(..., description="List of column names to use as features")
     target: str = Field(..., description="Name of the target column")
-    categorical_features: Optional[List[str]] = Field(None, description="List of categorical features")
-    numerical_features: Optional[List[str]] = Field(None, description="List of numerical features")
-    datetime_column: str = Field(..., description="Name of the datetime column")
-    item_id_column: Optional[str] = Field(None, description="Column name for item/machine ID if applicable")
+    categorical_features: Optional[List[str]] = Field(default=None, description="List of categorical features")
+    numerical_features: Optional[List[str]] = Field(default=None, description="List of numerical features")
+    datetime_column: Optional[str] = Field(default=None, description="Name of the datetime column")
+    item_id_column: Optional[str] = Field(default=None, description="Column name for item/machine ID if applicable")
 
 class ItemFilterRequest(CustomBaseModel):
     item_id_value: Union[str, int] = Field(..., description="The value of the item ID to filter by")
@@ -81,6 +81,10 @@ class ComparisonRequest(CustomBaseModel):
     file_content: str = Field(..., description="Base64 encoded file content")
     file_name: str = Field(..., description="Original file name with extension (.csv or .xlsx)")
 
+class ModelSaveRequest(BaseModel):
+    model_name: str
+    save_directory: str
+
 # Response Models
 class DataImportResponse(CustomBaseModel):
     success: bool = Field(..., description="Whether the data import was successful")
@@ -101,8 +105,8 @@ class FeatureDefinitionResponse(CustomBaseModel):
     target: str = Field(..., description="Selected target")
     categorical_features: List[str] = Field(..., description="Categorical features")
     numerical_features: List[str] = Field(..., description="Numerical features")
-    datetime_column: str = Field(..., description="Name of the datetime column")
-    item_id_column: Optional[str] = Field(None, description="Item ID column if specified")
+    datetime_column: Optional[str] = Field(default=None, description="Name of the datetime column")
+    item_id_column: Optional[str] = Field(default=None, description="Item ID column if specified")
 
 class ItemFilterResponse(CustomBaseModel):
     success: bool = Field(..., description="Whether the filtering was successful")

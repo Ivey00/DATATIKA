@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { apiRequest } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -60,12 +61,20 @@ interface Prediction {
   [key: string]: any;
 }
 
+interface ModelSaveRequest {
+  model_name: string;
+  save_directory: string;
+}
+
 // Main component
 export default function NumericalClassifier() {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState("import");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [modelName, setModelName] = useState("");
+  const [saveDirectory, setSaveDirectory] = useState("");
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
   
   // State for each step
   const [dataFile, setDataFile] = useState<File | null>(null);
@@ -86,7 +95,7 @@ export default function NumericalClassifier() {
   const [predictions, setPredictions] = useState<Prediction[]>([]);
   const [predictionFile, setPredictionFile] = useState<File | null>(null);
   const [visualizations, setVisualizations] = useState<Record<string, string>>({});
-  const [featureImportance, setFeatureImportance] = useState<{data: any[], visualization: string} | null>(null);
+  const [progressMessage, setProgressMessage] = useState<string>("");
   
   // Available algorithms
   const algorithms = [
@@ -251,9 +260,6 @@ export default function NumericalClassifier() {
         // Fetch visualizations
         await fetchVisualizations();
         
-        // Fetch feature importance
-        await fetchFeatureImportance();
-        
         // Move to the next tab
         setActiveTab("algorithm");
       } else {
@@ -286,23 +292,6 @@ export default function NumericalClassifier() {
       }
     } catch (error) {
       console.error("Error fetching visualizations:", error);
-    }
-  };
-  
-  // Function to fetch feature importance
-  const fetchFeatureImportance = async () => {
-    try {
-      const response = await fetch('/api/numerical-classifier/analyze-feature-importance');
-      const data = await response.json();
-      
-      if (data.success) {
-        setFeatureImportance({
-          data: data.importance_data,
-          visualization: data.visualization
-        });
-      }
-    } catch (error) {
-      console.error("Error fetching feature importance:", error);
     }
   };
   
@@ -412,61 +401,172 @@ export default function NumericalClassifier() {
   const handleModelTraining = async () => {
     setLoading(true);
     setProgress(0);
+    setProgressMessage("Starting model training...");
     
     try {
-      // First preprocess the data
-      const preprocessResponse = await fetch('/api/numerical-classifier/preprocess-data');
-      const preprocessData = await preprocessResponse.json();
-      
-      if (!preprocessData.success) {
-        throw new Error(preprocessData.message);
-      }
-      
-      setProgress(33);
-      
-      // Then train the model
-      const trainResponse = await fetch('/api/numerical-classifier/train-model');
-      const trainData = await trainResponse.json();
-      
-      if (!trainData.success) {
-        throw new Error(trainData.message);
-      }
-      
-      setProgress(66);
-      
-      // Finally evaluate the model
-      const evaluateResponse = await fetch('/api/numerical-classifier/evaluate-model');
-      const evaluateData = await evaluateResponse.json();
-      
-      if (!evaluateData.success) {
-        throw new Error(evaluateData.message);
-      }
-      
-      setProgress(100);
-      setModelTrained(true);
-      setEvaluation({
-        metrics: evaluateData.metrics,
-        classificationReport: evaluateData.classification_report,
-        confusionMatrix: evaluateData.confusion_matrix,
-        visualizations: evaluateData.visualizations
+      // Start the training process
+      const response = await apiRequestWithRetry('/api/numerical-classifier/train-model', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
       });
-      
-      toast({
-        title: "Model trained successfully",
-        description: `Accuracy: ${(evaluateData.metrics.accuracy * 100).toFixed(2)}%`,
-      });
-      
-      // Move to the next tab
-      setActiveTab("evaluation");
+
+      if (!response.success) {
+        throw new Error(response.message);
+      }
+
+      // Set up polling for progress updates
+      let retryCount = 0;
+      const maxRetries = 3;
+      let pollTimeout: NodeJS.Timeout | null = null;
+
+      const pollProgress = async () => {
+        try {
+          const progressData = await apiRequestWithRetry('/api/numerical-classifier/check-progress', {
+            method: 'GET',
+            headers: {
+              'Accept': 'application/json',
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache'
+            }
+          });
+
+          retryCount = 0; // Reset retry count on successful request
+
+          // Update progress state
+          setProgress(progressData.progress);
+          setProgressMessage(progressData.message || "Processing...");
+
+          if (progressData.error) {
+            setLoading(false);
+            throw new Error(progressData.error);
+          }
+
+          // Continue polling if task is still running
+          if (!progressData.is_complete && progressData.task_running) {
+            pollTimeout = setTimeout(pollProgress, 1000);
+          } else {
+            // Task is complete
+            if (progressData.progress === 100) {
+              setModelTrained(true);
+              setLoading(false);
+
+              toast({
+                title: "Model trained successfully",
+                description: progressData.message || "Model has been trained and evaluated",
+              });
+
+              // Fetch evaluation results
+              await fetchEvaluationResults();
+
+              // Move to the next tab
+              setActiveTab("evaluation");
+            } else if (!progressData.task_running) {
+              // Task stopped without completing
+              setLoading(false);
+              toast({
+                title: "Training incomplete",
+                description: "The training process stopped unexpectedly",
+                variant: "destructive"
+              });
+            }
+          }
+        } catch (error) {
+          console.error("Error checking progress:", error);
+
+          // Retry logic
+          if (retryCount < maxRetries) {
+            retryCount++;
+            console.log(`Retrying progress check (${retryCount}/${maxRetries})...`);
+            pollTimeout = setTimeout(pollProgress, 2000); // Wait 2 seconds before retrying
+          } else {
+            setLoading(false);
+            toast({
+              title: "Error training model",
+              description: error instanceof Error ? error.message : "Lost connection to server",
+              variant: "destructive"
+            });
+          }
+        }
+      };
+
+      // Start polling immediately
+      await pollProgress();
+
+      // Cleanup function
+      return () => {
+        if (pollTimeout) {
+          clearTimeout(pollTimeout);
+        }
+      };
+
     } catch (error) {
       console.error("Error training model:", error);
+      setLoading(false);
+
       toast({
         title: "Error training model",
         description: error instanceof Error ? error.message : "An unexpected error occurred",
         variant: "destructive"
       });
-    } finally {
-      setLoading(false);
+    }
+  };
+
+  // Add the apiRequestWithRetry function
+  const apiRequestWithRetry = async (url: string, options?: RequestInit, maxRetries = 3) => {
+    let lastError;
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        const response = await fetch(url, options);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        return data;
+      } catch (error) {
+        lastError = error;
+        // Only retry on network errors or 5xx server errors
+        if (error instanceof Error && 
+            (error.message.includes('socket hang up') || 
+             error.message.includes('network') ||
+             (error as any).status >= 500)) {
+          // Exponential backoff
+          await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError;
+  };
+
+  // Add the fetchEvaluationResults function
+  const fetchEvaluationResults = async () => {
+    try {
+      const response = await apiRequestWithRetry('/api/numerical-classifier/evaluate-model');
+      
+      if (response.success) {
+        setEvaluation({
+          metrics: response.metrics,
+          classificationReport: response.classification_report,
+          confusionMatrix: response.confusion_matrix,
+          visualizations: response.visualizations
+        });
+      } else {
+        toast({
+          title: "Error fetching evaluation results",
+          description: response.message,
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      console.error("Error fetching evaluation results:", error);
+      toast({
+        title: "Error fetching evaluation results",
+        description: "An unexpected error occurred",
+        variant: "destructive"
+      });
     }
   };
   
@@ -612,6 +712,55 @@ export default function NumericalClassifier() {
     }));
   };
   
+  // Function to handle model saving
+  const handleSaveModel = async () => {
+    if (!modelName || !saveDirectory) {
+      toast({
+        title: "Missing information",
+        description: "Please provide both model name and save directory",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const data = await apiRequest('/api/numerical-classifier/save-model', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model_name: modelName,
+          save_directory: saveDirectory
+        })
+      });
+
+      if (data.success) {
+        toast({
+          title: "Model saved successfully",
+          description: `Model saved to ${data.model_path}`,
+        });
+        setShowSaveDialog(false);
+      } else {
+        toast({
+          title: "Error saving model",
+          description: data.message,
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      console.error("Error saving model:", error);
+      toast({
+        title: "Error saving model",
+        description: "An unexpected error occurred",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+  
   // Function to format hyperparameter value for display
   const formatHyperparamValue = (value: any): string => {
     if (value === null) return "None";
@@ -751,7 +900,7 @@ export default function NumericalClassifier() {
             </div>
             
             <div>
-              <Label htmlFor="datetimeColumn">Datetime Column (Required)</Label>
+              <Label htmlFor="datetimeColumn">Datetime Column (Optional)</Label>
               <Select 
                 value={featureDefinition.datetimeColumn ?? "none"} 
                 onValueChange={(val: string) => handleDatetimeSelection(val === "none" ? null : val)}
@@ -769,7 +918,7 @@ export default function NumericalClassifier() {
                 </SelectContent>
               </Select>
               <p className="text-sm text-foreground/70 mt-1">
-                Column containing timestamps for time-based analysis
+                Optional column containing timestamps for time-based analysis
               </p>
             </div>
             
@@ -837,19 +986,6 @@ export default function NumericalClassifier() {
                 })}
               </div>
             </div>
-            
-            {featureImportance && (
-              <div className="mt-4">
-                <h3 className="text-lg font-medium text-secondary">Feature Importance</h3>
-                <div className="mt-2 border border-tertiary rounded-md p-4">
-                  <img 
-                    src={`data:image/png;base64,${featureImportance.visualization}`} 
-                    alt="Feature Importance" 
-                    className="w-full"
-                  />
-                </div>
-              </div>
-            )}
             
             {Object.keys(visualizations).length > 0 && (
               <div className="mt-4">
@@ -1039,9 +1175,7 @@ export default function NumericalClassifier() {
             <div className="space-y-2">
               <Progress value={progress} className="h-2 bg-tertiary/30" />
               <p className="text-sm text-center text-foreground/80">
-                {progress < 33 ? "Preprocessing data..." : 
-                 progress < 66 ? "Training model..." : 
-                 "Evaluating model..."}
+                {progressMessage}
               </p>
             </div>
           )}
@@ -1197,17 +1331,87 @@ export default function NumericalClassifier() {
           </div>
         )}
       </CardContent>
+
+      {showSaveDialog && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" />
+          <div className="fixed inset-0 flex items-center justify-center">
+            <Card className="w-[400px] border-tertiary bg-background">
+              <CardHeader>
+                <CardTitle>Save Model</CardTitle>
+                <CardDescription>
+                  Enter a name for your model and specify the save directory path
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="modelName">Model Name</Label>
+                    <Input
+                      id="modelName"
+                      value={modelName}
+                      onChange={(e) => setModelName(e.target.value)}
+                      placeholder="my_classifier_model"
+                      className="border-tertiary"
+                    />
+                    <p className="text-sm text-foreground/70 mt-1">
+                      The name of your model (e.g., customer_classifier)
+                    </p>
+                  </div>
+                  <div>
+                    <Label htmlFor="saveDirectory">Save Directory Path</Label>
+                    <Input
+                      id="saveDirectory"
+                      value={saveDirectory}
+                      onChange={(e) => setSaveDirectory(e.target.value)}
+                      placeholder="/path/to/save/directory"
+                      className="border-tertiary"
+                    />
+                    <p className="text-sm text-foreground/70 mt-1">
+                      Full path where you want to save the model (e.g., C:/Users/name/models)
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+              <CardFooter className="flex justify-end space-x-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowSaveDialog(false)}
+                  className="border-tertiary"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleSaveModel}
+                  disabled={loading || !modelName || !saveDirectory}
+                >
+                  Save Model
+                </Button>
+              </CardFooter>
+            </Card>
+          </div>
+        </div>
+      )}
+
       <CardFooter className="flex justify-between border-t border-tertiary">
         <Button variant="outline" onClick={() => setActiveTab("training")} className="border-tertiary">
           Back
         </Button>
-        <Button 
-          onClick={() => setActiveTab("prediction")} 
-          disabled={!evaluation}
-          variant="secondary"
-        >
-          Next: Make Predictions
-        </Button>
+        <div className="space-x-2">
+          <Button 
+            onClick={() => setActiveTab("prediction")} 
+            disabled={!evaluation}
+            variant="secondary"
+          >
+            Next: Make Predictions
+          </Button>
+          <Button 
+            onClick={() => setShowSaveDialog(true)}
+            variant="default"
+          >
+            Save Model
+          </Button>
+        </div>
       </CardFooter>
     </Card>
   );
