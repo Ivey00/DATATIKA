@@ -48,6 +48,7 @@ interface AlgorithmInfo {
   description: string;
   hyperparameters: Record<string, {
     description: string;
+    default: any;
     suggested_values: any[];
   }>;
 }
@@ -87,16 +88,15 @@ export default function AnomalyDetection() {
   const [predictions, setPredictions] = useState<Prediction[]>([]);
   const [predictionFile, setPredictionFile] = useState<File | null>(null);
   const [visualizations, setVisualizations] = useState<Record<string, string>>({});
+  const [modelName, setModelName] = useState("");
+  const [saveDirectory, setSaveDirectory] = useState("");
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
   
   // Available algorithms
   const algorithms = [
-    { value: "K-Means", label: "K-Means Clustering" },
-    { value: "DBSCAN", label: "DBSCAN" },
-    { value: "Gaussian Mixture", label: "Gaussian Mixture Model" },
     { value: "Isolation Forest", label: "Isolation Forest" },
     { value: "Local Outlier Factor", label: "Local Outlier Factor" },
-    { value: "One-Class SVM", label: "One-Class SVM" },
-    { value: "Agglomerative Clustering", label: "Agglomerative Clustering" }
+    { value: "One-Class SVM", label: "One-Class SVM" }
   ];
 
   // Setup SSE for progress updates
@@ -402,10 +402,9 @@ export default function AnomalyDetection() {
         
         // Initialize hyperparameters with default values
         const initialHyperparams: Record<string, any> = {};
-        Object.entries(data.hyperparameters).forEach(([key, value]: [string, any]) => {
-          if (value.suggested_values && value.suggested_values.length > 0) {
-            initialHyperparams[key] = value.suggested_values[0];
-          }
+        Object.entries(data.hyperparameters).forEach(([param, info]: [string, any]) => {
+          // Use the default value from the backend
+          initialHyperparams[param] = info.default;
         });
         
         setHyperparameters(initialHyperparams);
@@ -672,26 +671,40 @@ export default function AnomalyDetection() {
   
   // Function to format hyperparameter value for display
   const formatHyperparamValue = (value: any): string => {
-    if (value === null) return "None";
+    // Handle undefined or null
+    if (value === undefined || value === null) return "None";
+    // Handle boolean values
     if (typeof value === "boolean") return value ? "True" : "False";
+    // Handle special case for 'inf'
+    if (value === "inf") return "∞";
+    // Convert other values to string
     return value.toString();
   };
   
   // Function to save model and results
   const handleSaveResults = async () => {
+    if (!modelName || !saveDirectory) {
+      toast({
+        title: "Missing information",
+        description: "Please provide both model name and save directory",
+        variant: "destructive"
+      });
+      return;
+    }
+
     setLoading(true);
     
     try {
-      // Save results
-      const resultsResponse = await fetch('/api/anomaly-detection/save-results');
+      // Save results with custom path
+      const resultsResponse = await fetch(`/api/anomaly-detection/save-results?directory=${encodeURIComponent(saveDirectory)}`);
       const resultsData = await resultsResponse.json();
       
       if (!resultsData.success) {
         throw new Error(resultsData.message);
       }
       
-      // Save model
-      const modelResponse = await fetch('/api/anomaly-detection/save-model');
+      // Save model with custom path
+      const modelResponse = await fetch(`/api/anomaly-detection/save-model?directory=${encodeURIComponent(saveDirectory)}`);
       const modelData = await modelResponse.json();
       
       if (!modelData.success) {
@@ -702,6 +715,9 @@ export default function AnomalyDetection() {
         title: "Model and results saved",
         description: `Results saved to ${resultsData.model_path}`,
       });
+
+      // Close the dialog
+      setShowSaveDialog(false);
     } catch (error) {
       console.error("Error saving model and results:", error);
       toast({
@@ -1098,7 +1114,9 @@ export default function AnomalyDetection() {
               {Object.entries(hyperparameters).map(([param, value]) => (
                 <div key={param} className="flex justify-between text-sm">
                   <span className="text-foreground/80">{param}:</span>
-                  <span className="font-medium text-foreground">{formatHyperparamValue(value)}</span>
+                  <span className="font-medium text-foreground">
+                    {value !== undefined && value !== null ? formatHyperparamValue(value) : "None"}
+                  </span>
                 </div>
               ))}
             </div>
@@ -1289,7 +1307,7 @@ export default function AnomalyDetection() {
           Back
         </Button>
         <Button 
-          onClick={handleSaveResults} 
+          onClick={() => setShowSaveDialog(true)} 
           disabled={!evaluation}
           variant="secondary"
         >
@@ -1340,6 +1358,62 @@ export default function AnomalyDetection() {
           </div>
         </Tabs>
       </div>
+
+      {showSaveDialog && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" />
+          <div className="fixed inset-0 flex items-center justify-center">
+            <Card className="w-[400px] border-tertiary bg-background">
+              <CardHeader>
+                <CardTitle>Save Model</CardTitle>
+                <CardDescription>
+                  Enter a name for your model and specify the save directory path
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="modelName">Model Name</Label>
+                    <Input
+                      id="modelName"
+                      value={modelName}
+                      onChange={(e) => setModelName(e.target.value)}
+                      placeholder="Enter model name"
+                      className="border-tertiary"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="saveDirectory">Save Directory</Label>
+                    <Input
+                      id="saveDirectory"
+                      value={saveDirectory}
+                      onChange={(e) => setSaveDirectory(e.target.value)}
+                      placeholder="Enter save directory path"
+                      className="border-tertiary"
+                    />
+                  </div>
+                </div>
+              </CardContent>
+              <CardFooter className="flex justify-between">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowSaveDialog(false)}
+                  className="border-tertiary"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="default"
+                  onClick={handleSaveResults}
+                  disabled={!modelName || !saveDirectory || loading}
+                >
+                  Save
+                </Button>
+              </CardFooter>
+            </Card>
+          </div>
+        </div>
+      )}
     </PageLayout>
   );
 }

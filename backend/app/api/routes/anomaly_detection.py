@@ -558,18 +558,15 @@ async def select_algorithm(request: AlgorithmSelectionRequest):
         for param, details in anomaly_detection_system.algorithm_params[request.algorithm_name].items():
             hyperparameters[param] = {
                 'description': details['description'],
-                'suggested_values': [details['default']]
+                'default': details['default'],
+                'suggested_values': details['suggested_values']
             }
         
         # Create algorithm description
         algorithm_descriptions = {
-            'K-Means': "Clusters data points into groups. Points in small clusters or far from cluster centers may be anomalies.",
-            'DBSCAN': "Density-based clustering that can identify points in low-density regions as anomalies.",
-            'Gaussian Mixture': "Models data as a mixture of Gaussian distributions. Points with low probability under the model may be anomalies.",
             'Isolation Forest': "Isolates anomalies by randomly selecting features and split values. Anomalies require fewer splits to isolate.",
             'Local Outlier Factor': "Identifies anomalies by measuring local deviation of a point with respect to its neighbors.",
-            'One-Class SVM': "Learns a boundary around normal data points. Points outside this boundary are considered anomalies.",
-            'Agglomerative Clustering': "Hierarchical clustering that builds nested clusters by merging or splitting them. Small clusters may contain anomalies."
+            'One-Class SVM': "Learns a boundary around normal data points. Points outside this boundary are considered anomalies."
         }
         
         algorithm_description = algorithm_descriptions.get(request.algorithm_name, "No description available.")
@@ -1064,13 +1061,9 @@ async def get_algorithm_descriptions():
     """
     try:
         algorithm_descriptions = {
-            'K-Means': "Clusters data points into groups. Points in small clusters or far from cluster centers may be anomalies.",
-            'DBSCAN': "Density-based clustering that can identify points in low-density regions as anomalies.",
-            'Gaussian Mixture': "Models data as a mixture of Gaussian distributions. Points with low probability under the model may be anomalies.",
             'Isolation Forest': "Isolates anomalies by randomly selecting features and split values. Anomalies require fewer splits to isolate.",
             'Local Outlier Factor': "Identifies anomalies by measuring local deviation of a point with respect to its neighbors.",
-            'One-Class SVM': "Learns a boundary around normal data points. Points outside this boundary are considered anomalies.",
-            'Agglomerative Clustering': "Hierarchical clustering that builds nested clusters by merging or splitting them. Small clusters may contain anomalies."
+            'One-Class SVM': "Learns a boundary around normal data points. Points outside this boundary are considered anomalies."
         }
         
         return {"descriptions": algorithm_descriptions}
@@ -1086,7 +1079,7 @@ async def get_available_algorithms():
     Get list of available anomaly detection algorithms.
     """
     try:
-        algorithms = list(anomaly_detection_system.algorithms.keys())
+        algorithms = ['Isolation Forest', 'Local Outlier Factor', 'One-Class SVM']
         return {"algorithms": algorithms}
     except Exception as e:
         raise HTTPException(
