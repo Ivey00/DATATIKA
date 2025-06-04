@@ -55,6 +55,15 @@ interface Prediction {
   confidence?: number;
 }
 
+// Add ModelSaveRequest interface
+interface ModelSaveRequest {
+  model_name: string;
+  dataset_name: string;
+  save_directory: string;
+  hyperparameters: Record<string, any>;
+  algorithm_name: string;
+}
+
 // Main component
 export default function ImageClassification() {
   const { toast } = useToast();
@@ -82,6 +91,11 @@ export default function ImageClassification() {
   const [evaluation, setEvaluation] = useState<ModelEvaluation | null>(null);
   const [testImage, setTestImage] = useState<File | null>(null);
   const [prediction, setPrediction] = useState<Prediction | null>(null);
+  
+  // Add state variables for model saving
+  const [modelName, setModelName] = useState<string>("");
+  const [datasetName, setDatasetName] = useState<string>("");
+  const [saveDirectory, setSaveDirectory] = useState<string>("");
   
   // API base URL
   const API_BASE_URL = 'http://localhost:8000';
@@ -1334,18 +1348,65 @@ export default function ImageClassification() {
             </div>
           </div>
         )}
+        
+        <div className="mt-6 space-y-4 border-t border-tertiary pt-6">
+          <h3 className="text-lg font-medium text-secondary">Save Model</h3>
+          <div className="grid gap-4">
+            <div className="grid w-full max-w-sm items-center gap-1.5">
+              <Label htmlFor="modelName">Model Name</Label>
+              <Input
+                id="modelName"
+                value={modelName}
+                onChange={(e) => setModelName(e.target.value)}
+                placeholder="Enter a name for your model"
+                className="border-tertiary"
+              />
+            </div>
+
+            <div className="grid w-full max-w-sm items-center gap-1.5">
+              <Label htmlFor="datasetName">Dataset Name</Label>
+              <Input
+                id="datasetName"
+                value={datasetName}
+                onChange={(e) => setDatasetName(e.target.value)}
+                placeholder="Enter the name of the dataset used"
+                className="border-tertiary"
+              />
+            </div>
+
+            <div className="grid w-full max-w-sm items-center gap-1.5">
+              <Label htmlFor="saveDirectory">Save Directory</Label>
+              <Input
+                id="saveDirectory"
+                value={saveDirectory}
+                onChange={(e) => setSaveDirectory(e.target.value)}
+                placeholder="Enter the directory to save the model"
+                className="border-tertiary"
+              />
+            </div>
+          </div>
+        </div>
       </CardContent>
-      <CardFooter className="flex justify-between border-t border-tertiary">
+      <CardFooter className="flex justify-between border-t border-tertiary mt-6">
         <Button variant="outline" onClick={() => setActiveTab("train")} className="border-tertiary">
           Back
         </Button>
-        <Button 
-          onClick={() => setActiveTab("predict")} 
-          disabled={!evaluation}
-          variant="secondary"
-        >
-          Next: Test Single Image
-        </Button>
+        <div className="space-x-2">
+          <Button
+            onClick={handleSaveModel}
+            disabled={!modelTrained || !modelName || !datasetName || !saveDirectory || loading}
+            variant="default"
+          >
+            Save Model
+          </Button>
+          <Button 
+            onClick={() => setActiveTab("predict")} 
+            disabled={!evaluation}
+            variant="secondary"
+          >
+            Next: Test Single Image
+          </Button>
+        </div>
       </CardFooter>
     </Card>
   );
@@ -1427,6 +1488,59 @@ export default function ImageClassification() {
       </CardFooter>
     </Card>
   );
+  
+  // Add handleSaveModel function
+  const handleSaveModel = async () => {
+    if (!selectedModel || !modelTrained) {
+      toast({
+        title: "Cannot save model",
+        description: "Please ensure a model is selected and trained first",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const saveRequest: ModelSaveRequest = {
+        model_name: modelName,
+        dataset_name: datasetName,
+        save_directory: saveDirectory,
+        hyperparameters: hyperparameters,
+        algorithm_name: selectedModel
+      };
+
+      const response = await fetch(`${API_BASE_URL}/api/image-classification/save-model`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(saveRequest),
+        credentials: 'include'
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        toast({
+          title: "Model saved successfully",
+          description: data.message,
+        });
+      } else {
+        throw new Error(data.message);
+      }
+    } catch (error) {
+      console.error("Error saving model:", error);
+      toast({
+        title: "Error saving model",
+        description: error instanceof Error ? error.message : "An unexpected error occurred",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
   
   return (
     <PageLayout>

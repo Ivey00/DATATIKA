@@ -190,6 +190,7 @@ class ModelSaveResponse(CustomBaseModel):
     message: str = Field(..., description="Status message")
     model_path: str = Field(..., description="Path to the saved model")
     timestamp: str = Field(..., description="Timestamp when the model was saved")
+    model_id: Optional[int] = Field(None, description="Model ID")
 
 class ErrorResponse(CustomBaseModel):
     success: bool = Field(False, description="Operation failed")

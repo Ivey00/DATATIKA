@@ -14,6 +14,8 @@ import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix
 import asyncio
 from sqlalchemy.orm import Session
+import pickle
+from fastapi import Request
 
 from app.core.classification import Classification
 from app.models.schema import (
@@ -891,7 +893,8 @@ async def save_model(
                 success=False,
                 message="No trained model available. Please train a model first.",
                 model_path="",
-                timestamp=""
+                timestamp="",
+                model_id=None
             )
 
         # Create directory if it doesn't exist
@@ -909,7 +912,8 @@ async def save_model(
                 success=False,
                 message="Failed to save model",
                 model_path="",
-                timestamp=""
+                timestamp="",
+                model_id=None
             )
             
         # Get current timestamp
@@ -917,9 +921,9 @@ async def save_model(
         
         # Save model metadata to database
         db_model = TrainedModel(
-            user_id=current_user.id,  # Add user_id here
+            user_id=current_user.id,
             name=request.model_name,
-            model_type=request.algorithm_name,
+            model_type="numerical_classification",  # Set fixed model type
             dataset_name=request.dataset_name,
             model_path=model_path,
             metrics=classification_system.evaluation_metrics if hasattr(classification_system, 'evaluation_metrics') else None,
@@ -928,12 +932,14 @@ async def save_model(
         
         db.add(db_model)
         db.commit()
+        db.refresh(db_model)  # Refresh to get the ID
         
         return ModelSaveResponse(
             success=True,
             message="Model saved successfully",
             model_path=model_path,
-            timestamp=timestamp
+            timestamp=timestamp,
+            model_id=db_model.id
         )
         
     except Exception as e:
@@ -941,7 +947,8 @@ async def save_model(
             success=False,
             message=f"Error saving model: {str(e)}",
             model_path="",
-            timestamp=""
+            timestamp="",
+            model_id=None
         )
 
 @router.get("/algorithm-descriptions")
@@ -956,4 +963,194 @@ async def get_algorithm_descriptions():
         raise HTTPException(
             status_code=500,
             detail=f"Error getting algorithm descriptions: {str(e)}"
+        )
+
+@router.post("/predict-saved-model/{model_id}")
+async def predict_saved_model(
+    model_id: int,
+    request: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Make predictions using a saved model. Can accept either CSV content as string or direct data.
+    """
+    try:
+        # Get model info from database
+        model = db.query(TrainedModel).filter(
+            TrainedModel.id == model_id,
+            TrainedModel.user_id == current_user.id
+        ).first()
+        
+        if not model:
+            raise HTTPException(
+                status_code=404,
+                detail="Model not found"
+            )
+        
+        # Load the model and preprocessor
+        model_dir = os.path.dirname(model.model_path)
+        model_name = os.path.splitext(os.path.basename(model.model_path))[0]
+        base_name = model_name.rsplit('_', 1)[0]  # Remove timestamp
+        
+        print(f"Loading model from: {model.model_path}")
+        
+        # Load model
+        with open(model.model_path, 'rb') as f:
+            trained_model = pickle.load(f)
+            
+        # Load preprocessor
+        preprocessor_path = os.path.join(model_dir, f"{base_name}_preprocessor.pkl")
+        print(f"Loading preprocessor from: {preprocessor_path}")
+        with open(preprocessor_path, 'rb') as f:
+            preprocessor = pickle.load(f)
+            
+        # Load metadata
+        metadata_path = os.path.join(model_dir, f"{base_name}_metadata.pkl")
+        print(f"Loading metadata from: {metadata_path}")
+        with open(metadata_path, 'rb') as f:
+            metadata = pickle.load(f)
+            
+        # Process input data
+        if request.get('file_content'):
+            try:
+                # Create a StringIO object from the CSV content
+                from io import StringIO
+                csv_buffer = StringIO(request['file_content'])
+                
+                # Read data using pandas
+                new_data = pd.read_csv(csv_buffer)
+                print(f"Successfully loaded CSV data with shape: {new_data.shape}")
+                print(f"CSV columns: {new_data.columns.tolist()}")
+            except Exception as e:
+                print(f"Error reading CSV data: {str(e)}")
+                print(f"CSV content preview: {request['file_content'][:200]}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Error reading CSV data: {str(e)}"
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="CSV data must be provided"
+            )
+            
+        # Check required features
+        required_features = metadata['features']
+        print(f"Required features from metadata: {required_features}")
+        print(f"Available columns in CSV: {new_data.columns.tolist()}")
+        
+        # Normalize column names (remove whitespace, convert to lowercase)
+        new_data.columns = new_data.columns.str.strip()
+        normalized_columns = {col.lower(): col for col in new_data.columns}
+        normalized_required = [f.lower() for f in required_features]
+        
+        # Check for missing features with case-insensitive comparison
+        missing_features = []
+        for feature in required_features:
+            if feature.lower() not in normalized_columns:
+                missing_features.append(feature)
+        
+        if missing_features:
+            print(f"Missing features detected: {missing_features}")
+            print(f"Available columns (normalized): {list(normalized_columns.keys())}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Missing required features: {missing_features}"
+            )
+            
+        # Reorder columns to match training data
+        new_data = new_data[[normalized_columns[f.lower()] for f in required_features]]
+        new_data.columns = required_features  # Ensure column names match exactly
+            
+        # Extract features
+        X_new = new_data
+        
+        # Preprocess data
+        try:
+            X_new_processed = preprocessor.transform(X_new)
+        except Exception as e:
+            print(f"Preprocessing error: {str(e)}")
+            print(f"Data types: {X_new.dtypes}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error preprocessing data: {str(e)}"
+            )
+        
+        # Make predictions
+        predictions = trained_model.predict(X_new_processed)
+        probabilities = None
+        if hasattr(trained_model, 'predict_proba'):
+            probabilities = trained_model.predict_proba(X_new_processed)
+            
+        # Prepare results
+        results = new_data.copy()
+        target_col = metadata['target']
+        
+        if target_col in results.columns:
+            # If target column exists but is empty/null, fill with predictions
+            results[target_col] = predictions
+        else:
+            # Create new target column with predictions
+            results[f'predicted_{target_col}'] = predictions
+            
+        # Add probabilities for binary classification
+        if probabilities is not None and probabilities.shape[1] == 2:
+            results[f'probability_{target_col}'] = probabilities[:, 1]
+            
+        return {
+            "success": True,
+            "message": "Predictions made successfully",
+            "predictions": results.to_dict(orient='records'),
+            "prediction_count": len(results)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        print(f"Error type: {type(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "message": f"Error making predictions: {str(e)}",
+            "predictions": [],
+            "prediction_count": 0
+        }
+
+@router.post("/webhook/{model_id}")
+async def model_webhook(
+    model_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Webhook endpoint for making predictions with a saved model.
+    """
+    try:
+        # Get request body
+        data = await request.json()
+        
+        # Make prediction using the saved model
+        result = await predict_saved_model(
+            model_id=model_id,
+            request=data,
+            current_user=current_user,
+            db=db
+        )
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=400,
+                detail=result["message"]
+            )
+            
+        return result
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing webhook: {str(e)}"
         )

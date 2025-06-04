@@ -63,7 +63,7 @@ interface ModelSaveRequest {
   model_name: string;
   dataset_name: string;
   save_directory: string;
-  hyperparameters: {[key: string]: any};
+  hyperparameters: { [key: string]: any };
   algorithm_name: string;
 }
 
@@ -508,6 +508,42 @@ export default function TargetPrediction() {
     }
   };
   
+  // Function to handle preprocessing
+  const handlePreprocessing = async () => {
+    setLoading(true);
+    setProgress(0);
+    setProgressMessage("Starting data preprocessing...");
+    
+    try {
+      const response = await apiRequestWithRetry('/api/target-prediction/preprocess-data');
+      
+      if (response.success) {
+        toast({
+          title: "Data preprocessed successfully",
+          description: `Train set: ${response.train_shape[0]} samples, Test set: ${response.test_shape[0]} samples`,
+        });
+        return true;
+      } else {
+        toast({
+          title: "Error preprocessing data",
+          description: response.message,
+          variant: "destructive"
+        });
+        return false;
+      }
+    } catch (error) {
+      console.error("Error preprocessing data:", error);
+      toast({
+        title: "Error preprocessing data",
+        description: error instanceof Error ? error.message : "An unexpected error occurred",
+        variant: "destructive"
+      });
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+  
   // Function to handle model training
   const handleModelTraining = async () => {
     setLoading(true);
@@ -515,6 +551,12 @@ export default function TargetPrediction() {
     setProgressMessage("Starting model training...");
     
     try {
+      // First, preprocess the data
+      const preprocessSuccess = await handlePreprocessing();
+      if (!preprocessSuccess) {
+        return;
+      }
+
       // Start the training process
       const response = await apiRequestWithRetry('/api/target-prediction/train-model', {
         method: 'POST',
@@ -1319,9 +1361,12 @@ export default function TargetPrediction() {
             <div className="space-y-2">
               <Progress value={progress} className="h-2 bg-tertiary/30" />
               <p className="text-sm text-center text-foreground/80">
-                {progress < 33 ? "Preprocessing data..." : 
-                 progress < 66 ? "Training model..." : 
-                 "Evaluating model..."}
+                {progressMessage || (
+                  progress < 25 ? "Preprocessing data..." : 
+                  progress < 50 ? "Initializing model..." : 
+                  progress < 75 ? "Training model..." : 
+                  "Evaluating model..."
+                )}
               </p>
             </div>
           )}

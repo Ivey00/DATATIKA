@@ -1064,59 +1064,147 @@ class TimeSeriesForecaster:
     
     def save_model(self, file_path):
         """
-        Save the trained model to a file.
+        Save the trained model, preprocessor, and metadata to disk.
         
         Parameters:
         -----------
         file_path : str
-            Path to save the model
+            Path to save the model.
             
         Returns:
         --------
-        bool
-            True if successful, False otherwise
+        str
+            Path to the saved model file.
         """
         if self.model is None:
             print("Please train model first using train_model() method.")
-            return False
+            return None
         
         try:
             import joblib
             
             # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            directory = os.path.dirname(file_path)
+            os.makedirs(directory, exist_ok=True)
+            
+            # Extract directory and base filename
+            directory = os.path.dirname(file_path)
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            
+            # Remove any existing suffix like _model
+            base_name = base_name.replace('_model', '')
             
             # Save model
-            joblib.dump(self.model, file_path)
+            model_path = os.path.join(directory, f"{base_name}_model.pkl")
+            joblib.dump(self.model, model_path)
             
-            print(f"Model saved to {file_path}")
-            return True
+            # Save preprocessor if available
+            if self.preprocessor is not None:
+                preprocessor_path = os.path.join(directory, f"{base_name}_preprocessor.pkl")
+                joblib.dump(self.preprocessor, preprocessor_path)
+            
+            # Get evaluation metrics if available
+            metrics = None
+            if hasattr(self, 'evaluation_metrics'):
+                metrics = self.evaluation_metrics
+            
+            # Save metadata
+            metadata = {
+                'model_class': self.algorithm,
+                'model_type': 'time_series',  # For database schema
+                'features': self.features,
+                'target': self.target,
+                'numerical_cols': self.numerical_cols,
+                'categorical_cols': self.categorical_cols,
+                'datetime_col': self.datetime_col,
+                'item_id_col': self.item_id_col,
+                'time_unit': self.time_unit,
+                'forecast_horizon': self.forecast_horizon,
+                'hyperparameters': self.hyperparameters,
+                'metrics': metrics,
+                'auto_generated_features': self.auto_generated_features,
+                'created_at': datetime.now().strftime("%Y%m%d_%H%M%S")
+            }
+            
+            metadata_path = os.path.join(directory, f"{base_name}_metadata.pkl")
+            joblib.dump(metadata, metadata_path)
+            
+            print(f"Model saved to {model_path}")
+            print(f"Preprocessor saved to {os.path.join(directory, f'{base_name}_preprocessor.pkl')}")
+            print(f"Metadata saved to {metadata_path}")
+            
+            return model_path
+            
         except Exception as e:
             print(f"Error saving model: {str(e)}")
-            return False
+            return None
     
     def load_model(self, file_path):
         """
-        Load a trained model from a file.
+        Load a previously saved model, preprocessor, and metadata from disk.
         
         Parameters:
         -----------
         file_path : str
-            Path to the saved model
+            Path to the saved model file. The preprocessor and metadata files
+            should be in the same directory with _preprocessor.pkl and _metadata.pkl suffixes.
             
         Returns:
         --------
-        object
-            The loaded model
+        bool
+            True if the model was loaded successfully, False otherwise.
         """
         try:
             import joblib
             
-            # Load model
-            self.model = joblib.load(file_path)
+            # Extract directory and base filename
+            directory = os.path.dirname(file_path)
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
             
-            print(f"Model loaded from {file_path}")
-            return self.model
+            # Remove any existing suffix like _model
+            base_name = base_name.replace('_model', '')
+            
+            # Load model
+            model_path = os.path.join(directory, f"{base_name}_model.pkl")
+            self.model = joblib.load(model_path)
+            
+            # Load preprocessor if available
+            preprocessor_path = os.path.join(directory, f"{base_name}_preprocessor.pkl")
+            if os.path.exists(preprocessor_path):
+                self.preprocessor = joblib.load(preprocessor_path)
+            
+            # Load metadata if available
+            metadata_path = os.path.join(directory, f"{base_name}_metadata.pkl")
+            if os.path.exists(metadata_path):
+                metadata = joblib.load(metadata_path)
+                
+                # Update class attributes from metadata
+                self.algorithm = metadata.get('model_class')
+                self.features = metadata.get('features')
+                self.target = metadata.get('target')
+                self.numerical_cols = metadata.get('numerical_cols')
+                self.categorical_cols = metadata.get('categorical_cols')
+                self.datetime_col = metadata.get('datetime_col')
+                self.item_id_col = metadata.get('item_id_col')
+                self.time_unit = metadata.get('time_unit')
+                self.forecast_horizon = metadata.get('forecast_horizon')
+                self.hyperparameters = metadata.get('hyperparameters')
+                self.auto_generated_features = metadata.get('auto_generated_features')
+                
+                if 'metrics' in metadata:
+                    self.evaluation_metrics = metadata['metrics']
+            
+            print(f"Model loaded from {model_path}")
+            if os.path.exists(preprocessor_path):
+                print(f"Preprocessor loaded from {preprocessor_path}")
+            if os.path.exists(metadata_path):
+                print(f"Metadata loaded from {metadata_path}")
+                print(f"Model type: {self.algorithm}")
+                print(f"Features: {self.features}")
+                print(f"Target: {self.target}")
+            
+            return True
+            
         except Exception as e:
             print(f"Error loading model: {str(e)}")
-            return None
+            return False

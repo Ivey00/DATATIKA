@@ -508,6 +508,112 @@ class ModelManager:
             print(f"Le modèle {model_name} n'a pas été entraîné.")
             return None
 
+    def save_model(self, model_path, preprocessor=None, metadata=None):
+        """
+        Save the trained model, preprocessor, and metadata to disk.
+        
+        Args:
+            model_path (str): Path to save the model
+            preprocessor: Optional preprocessor to save
+            metadata (dict): Optional metadata to save
+            
+        Returns:
+            str: Path to the saved model file.
+        """
+        try:
+            import joblib
+            
+            # Create directory if it doesn't exist
+            directory = os.path.dirname(model_path)
+            os.makedirs(directory, exist_ok=True)
+            
+            # Extract directory and base filename
+            directory = os.path.dirname(model_path)
+            base_name = os.path.splitext(os.path.basename(model_path))[0]
+            
+            # Remove any existing suffix like _model
+            base_name = base_name.replace('_model', '')
+            
+            # Save model
+            model_path = os.path.join(directory, f"{base_name}_model.pkl")
+            if self.current_model is not None:
+                joblib.dump(self.current_model, model_path)
+            else:
+                print("No trained model available to save.")
+                return None
+            
+            # Save preprocessor if available
+            if preprocessor is not None:
+                preprocessor_path = os.path.join(directory, f"{base_name}_preprocessor.pkl")
+                joblib.dump(preprocessor, preprocessor_path)
+            
+            # Save metadata
+            if metadata is not None:
+                metadata_path = os.path.join(directory, f"{base_name}_metadata.pkl")
+                joblib.dump(metadata, metadata_path)
+            
+            print(f"Model saved to {model_path}")
+            if preprocessor is not None:
+                print(f"Preprocessor saved to {os.path.join(directory, f'{base_name}_preprocessor.pkl')}")
+            if metadata is not None:
+                print(f"Metadata saved to {metadata_path}")
+            
+            return model_path
+            
+        except Exception as e:
+            print(f"Error saving model: {str(e)}")
+            return None
+    
+    def load_model(self, model_path):
+        """
+        Load a previously saved model, preprocessor, and metadata from disk.
+        
+        Args:
+            model_path (str): Path to the saved model file. The preprocessor and metadata files
+                should be in the same directory with _preprocessor.pkl and _metadata.pkl suffixes.
+            
+        Returns:
+            tuple: (model, preprocessor, metadata) or (None, None, None) if loading fails
+        """
+        try:
+            import joblib
+            
+            # Extract directory and base filename
+            directory = os.path.dirname(model_path)
+            base_name = os.path.splitext(os.path.basename(model_path))[0]
+            
+            # Remove any existing suffix like _model
+            base_name = base_name.replace('_model', '')
+            
+            # Load model
+            model_path = os.path.join(directory, f"{base_name}_model.pkl")
+            model = joblib.load(model_path)
+            self.current_model = model
+            
+            # Load preprocessor if available
+            preprocessor = None
+            preprocessor_path = os.path.join(directory, f"{base_name}_preprocessor.pkl")
+            if os.path.exists(preprocessor_path):
+                preprocessor = joblib.load(preprocessor_path)
+            
+            # Load metadata if available
+            metadata = None
+            metadata_path = os.path.join(directory, f"{base_name}_metadata.pkl")
+            if os.path.exists(metadata_path):
+                metadata = joblib.load(metadata_path)
+            
+            print(f"Model loaded from {model_path}")
+            if preprocessor is not None:
+                print(f"Preprocessor loaded from {preprocessor_path}")
+            if metadata is not None:
+                print(f"Metadata loaded from {metadata_path}")
+            
+            return model, preprocessor, metadata
+            
+        except Exception as e:
+            print(f"Error loading model: {str(e)}")
+            return None, None, None
+
 
 class IndustrialVisionApp:
     """

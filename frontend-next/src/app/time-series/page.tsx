@@ -64,6 +64,14 @@ interface Prediction {
   [key: string]: any;
 }
 
+interface ModelSaveRequest {
+  model_name: string;
+  dataset_name: string;
+  save_directory: string;
+  hyperparameters: { [key: string]: any };
+  algorithm_name: string;
+}
+
 // Add retry mechanism for API requests
 const apiRequestWithRetry = async (url: string, options?: RequestInit, maxRetries = 3) => {
   let lastError;
@@ -109,6 +117,9 @@ export default function TimeSeries() {
   const [activeTab, setActiveTab] = useState("import");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [progressMessage, setProgressMessage] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [saveDirectory, setSaveDirectory] = useState("");
   
   // State for each step
   const [dataFile, setDataFile] = useState<File | null>(null);
@@ -791,6 +802,60 @@ export default function TimeSeries() {
     return value.toString();
   };
   
+  // Function to handle model saving
+  const handleSaveModel = async () => {
+    if (!modelName || !saveDirectory) {
+      toast({
+        title: "Missing information",
+        description: "Please provide both model name and save directory",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const response = await fetch('/api/time-series/save-model', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          model_name: modelName,
+          dataset_name: dataFile?.name || "unknown_dataset",
+          save_directory: saveDirectory,
+          hyperparameters: hyperparameters,
+          algorithm_name: selectedAlgorithm
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: "Model saved successfully",
+        });
+      } else {
+        toast({
+          title: "Error",
+          description: data.message || "Failed to save model",
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      console.error("Error saving model:", error);
+      toast({
+        title: "Error",
+        description: "Failed to save model",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+  
   // Function to render the data import step
   const renderDataImport = () => (
     <Card className="border-tertiary">
@@ -1397,104 +1462,74 @@ export default function TimeSeries() {
         </CardDescription>
       </CardHeader>
       <CardContent className="pt-6">
-        {evaluation && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <Card className="border-tertiary">
-                <CardHeader className="py-2 bg-primary/10 border-b border-tertiary">
-                  <CardTitle className="text-lg text-primary">R² Score</CardTitle>
-                </CardHeader>
-                <CardContent className="pt-4">
-                  <p className="text-3xl font-bold text-foreground">
-                    {(evaluation.metrics.R2 * 100).toFixed(2)}%
-                  </p>
-                  <p className="text-xs text-foreground/70 mt-1">
-                    Coefficient of determination (1.0 is perfect prediction)
-                  </p>
-                </CardContent>
-              </Card>
-              
-              <Card className="border-tertiary">
-                <CardHeader className="py-2 bg-secondary/10 border-b border-tertiary">
-                  <CardTitle className="text-lg text-secondary">RMSE</CardTitle>
-                </CardHeader>
-                <CardContent className="pt-4">
-                  <p className="text-3xl font-bold text-foreground">
-                    {evaluation.metrics.RMSE.toFixed(4)}
-                  </p>
-                  <p className="text-xs text-foreground/70 mt-1">
-                    Root Mean Squared Error (lower is better)
-                  </p>
-                </CardContent>
-              </Card>
-              
-              <Card className="border-tertiary">
-                <CardHeader className="py-2 bg-tertiary/20 border-b border-tertiary">
-                  <CardTitle className="text-lg text-foreground">MAE</CardTitle>
-                </CardHeader>
-                <CardContent className="pt-4">
-                  <p className="text-3xl font-bold text-foreground">
-                    {evaluation.metrics.MAE.toFixed(4)}
-                  </p>
-                  <p className="text-xs text-foreground/70 mt-1">
-                    Mean Absolute Error (lower is better)
-                  </p>
-                </CardContent>
-              </Card>
-              
-              <Card className="border-tertiary">
-                <CardHeader className="py-2 bg-tertiary/20 border-b border-tertiary">
-                  <CardTitle className="text-lg text-foreground">MAPE</CardTitle>
-                </CardHeader>
-                <CardContent className="pt-4">
-                  <p className="text-3xl font-bold text-foreground">
-                    {evaluation.metrics.MAPE.toFixed(2)}%
-                  </p>
-                  <p className="text-xs text-foreground/70 mt-1">
-                    Mean Absolute Percentage Error (lower is better)
-                  </p>
-                </CardContent>
-              </Card>
-            </div>
-            
-            <Separator className="bg-tertiary/50" />
-            
-            <div>
-              <h3 className="text-lg font-medium text-secondary mb-2">Actual vs Predicted Values</h3>
-              {evaluation.visualizations.actual_vs_predicted && (
-                <img 
-                  src={`data:image/png;base64,${evaluation.visualizations.actual_vs_predicted}`} 
-                  alt="Actual vs Predicted Values" 
-                  className="w-full max-w-md mx-auto"
-                />
-              )}
-            </div>
-            
-            <Separator className="bg-tertiary/50" />
-            
-            <div>
-              <h3 className="text-lg font-medium text-secondary mb-2">Interpretation</h3>
-              <div className="space-y-2 text-sm text-foreground/90">
-                <p>
-                  <strong>R² Score:</strong> Indicates how well the model explains the variance in the target variable. 
-                  Values closer to 1.0 indicate better fit.
-                </p>
-                <p>
-                  <strong>RMSE (Root Mean Squared Error):</strong> Measures the average magnitude of errors in predictions. 
-                  It gives higher weight to larger errors.
-                </p>
-                <p>
-                  <strong>MAE (Mean Absolute Error):</strong> Measures the average magnitude of errors without considering their direction.
-                  It's less sensitive to outliers than RMSE.
-                </p>
-                <p>
-                  <strong>MAPE (Mean Absolute Percentage Error):</strong> Measures the average percentage difference between predicted and actual values. 
-                  It provides a normalized measure that's easy to interpret.
-                </p>
+        <div className="space-y-4">
+          <h2 className="text-2xl font-bold">Model Evaluation</h2>
+          
+          {evaluation && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-4 border rounded-lg">
+                  <h3 className="text-lg font-semibold mb-2">Metrics</h3>
+                  <div className="space-y-2">
+                    {Object.entries(evaluation.metrics).map(([key, value]) => (
+                      <div key={key} className="flex justify-between">
+                        <span>{key}:</span>
+                        <span>{typeof value === 'number' ? value.toFixed(4) : value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                
+                {/* Save Model Section */}
+                <div className="p-4 border rounded-lg">
+                  <h3 className="text-lg font-semibold mb-2">Save Model</h3>
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="modelName">Model Name</Label>
+                      <Input
+                        id="modelName"
+                        value={modelName}
+                        onChange={(e) => setModelName(e.target.value)}
+                        placeholder="Enter model name"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="saveDirectory">Save Directory</Label>
+                      <Input
+                        id="saveDirectory"
+                        value={saveDirectory}
+                        onChange={(e) => setSaveDirectory(e.target.value)}
+                        placeholder="Enter save directory path"
+                      />
+                    </div>
+                    <Button 
+                      onClick={handleSaveModel}
+                      disabled={loading}
+                      variant="secondary"
+                    >
+                      {loading ? "Saving..." : "Save Model"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Visualizations */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold">Visualizations</h3>
+                {Object.entries(evaluation.visualizations).map(([key, base64Image]) => (
+                  <div key={key} className="border rounded-lg p-4">
+                    <h4 className="text-md font-medium mb-2">{key}</h4>
+                    <img 
+                      src={`data:image/png;base64,${base64Image}`} 
+                      alt={key} 
+                      className="w-full"
+                    />
+                  </div>
+                ))}
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </CardContent>
       <CardFooter className="flex justify-between border-t border-tertiary">
         <Button variant="outline" onClick={() => setActiveTab("training")} className="border-tertiary">
@@ -1653,12 +1688,7 @@ export default function TimeSeries() {
           Back
         </Button>
         <Button 
-          onClick={() => {
-            toast({
-              title: "Model saved",
-              description: "Model saved successfully",
-            });
-          }}
+          onClick={handleSaveModel}
           variant="secondary"
         >
           Save Model

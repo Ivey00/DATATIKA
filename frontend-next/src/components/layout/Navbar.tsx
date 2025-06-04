@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, BarChart, ActivitySquare, Clock, Image, LogOut, User } from 'lucide-react';
+import { LayoutDashboard, BarChart, ActivitySquare, Clock, Image, LogOut, User, Database } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
@@ -89,6 +89,11 @@ const Navbar = () => {
       name: 'Image Classification', 
       path: '/image-classification', 
       icon: <Image className="h-5 w-5" /> 
+    },
+    {
+      name: 'My Models',
+      path: '/my-models',
+      icon: <Database className="h-5 w-5" />
     }
   ];
 

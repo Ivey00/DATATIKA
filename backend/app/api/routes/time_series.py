@@ -1,4 +1,3 @@
-import base64
 from datetime import datetime
 import io
 import os
@@ -15,6 +14,9 @@ import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from sqlalchemy.orm import Session
+from pathlib import Path
+import base64
 
 from app.core.time_series import TimeSeriesForecaster
 from app.models.schema import (
@@ -31,10 +33,14 @@ from app.models.schema import (
     EvaluationResponse,
     PredictionRequest, PredictionResponse,
     ComparisonRequest, ComparisonResponse,
+    ModelSaveRequest,
     ModelSaveResponse,
     ErrorResponse,
     convert_to_native_types
 )
+from ..routes.auth import get_current_user
+from ...db.database import get_db
+from app.db.models import TrainedModel, User
 
 router = APIRouter()
 
@@ -1161,13 +1167,16 @@ async def compare_predictions(request: ComparisonRequest):
             visualizations={}
         )
 
-@router.get("/save-model", response_model=ModelSaveResponse)
-async def save_model(directory: str = "models"):
+@router.post("/save-model", response_model=ModelSaveResponse)
+async def save_model(
+    request: ModelSaveRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
-    Save the trained model to disk.
+    Save the trained model and its metadata to disk and database.
     """
     try:
-        # Check if a model is trained
         if time_series_forecaster.model is None:
             return ModelSaveResponse(
                 success=False,
@@ -1175,34 +1184,65 @@ async def save_model(directory: str = "models"):
                 model_path="",
                 timestamp=""
             )
-        
-        # Create the models directory if it doesn't exist
-        os.makedirs(directory, exist_ok=True)
-        
-        # Generate a filename based on algorithm and timestamp
+
+        if not current_user:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication required to save model"
+            )
+
+        # Generate safe filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"time_series_{time_series_forecaster.algorithm}_{timestamp}.joblib"
-        filepath = os.path.join(directory, filename)
+        safe_model_name = "".join(c for c in request.model_name if c.isalnum() or c in ('-', '_')).rstrip()
+        base_filename = f"{safe_model_name}_{timestamp}"
         
-        # Save the model
-        success = time_series_forecaster.save_model(filepath)
+        # Use the user's specified save path
+        save_path = Path(request.save_directory)
         
-        if not success:
+        # Create directory if it doesn't exist
+        save_path.mkdir(parents=True, exist_ok=True)
+        
+        # Full path for the model file (without extension)
+        base_path = str(save_path / base_filename)
+
+        # Save model and get model path
+        model_path = time_series_forecaster.save_model(base_path)
+        
+        if model_path is None:
             return ModelSaveResponse(
                 success=False,
-                message="Failed to save model.",
+                message="Failed to save model file",
                 model_path="",
                 timestamp=""
             )
-        
+
+        # Create database entry
+        db_model = TrainedModel(
+            user_id=current_user.id,
+            name=request.model_name,
+            model_type="time_series",
+            dataset_name=request.dataset_name,
+            model_path=model_path,  # Store only the model path
+            metrics=time_series_forecaster.evaluation_metrics if hasattr(time_series_forecaster, 'evaluation_metrics') else None,
+            hyperparameters={
+                "algorithm": time_series_forecaster.algorithm,
+                "parameters": time_series_forecaster.hyperparameters
+            }
+        )
+
+        db.add(db_model)
+        db.commit()
+        db.refresh(db_model)
+
         return ModelSaveResponse(
             success=True,
-            message=f"Model saved successfully to {filepath}.",
-            model_path=filepath,
+            message="Model saved successfully",
+            model_path=model_path,
             timestamp=datetime.now().isoformat()
         )
-        
+
     except Exception as e:
+        db.rollback()
         return ModelSaveResponse(
             success=False,
             message=f"Error saving model: {str(e)}",

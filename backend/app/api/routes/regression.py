@@ -1224,7 +1224,7 @@ async def save_model(
         # Generate safe filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_model_name = "".join(c for c in request.model_name if c.isalnum() or c in ('-', '_')).rstrip()
-        filename = f"{safe_model_name}_{timestamp}.joblib"
+        base_filename = f"{safe_model_name}_{timestamp}"
         
         # Use the user's specified save path
         save_path = Path(request.save_directory)
@@ -1232,11 +1232,11 @@ async def save_model(
         # Create directory if it doesn't exist
         save_path.mkdir(parents=True, exist_ok=True)
         
-        # Full path for the model file
-        model_path = str(save_path / filename)
+        # Full path for the model file (without extension)
+        base_path = str(save_path / base_filename)
 
-        # Save model
-        regression_system.save_model(model_path)
+        # Save model and get all paths - we'll only store model_path in the database
+        model_path, _, _ = regression_system.save_model(base_path)
 
         # Create database entry with hyperparameters
         db_model = TrainedModel(
@@ -1244,7 +1244,7 @@ async def save_model(
             name=request.model_name,
             model_type="target_prediction",
             dataset_name=request.dataset_name,
-            model_path=model_path,
+            model_path=model_path,  # Store only the model path
             metrics=regression_system.last_evaluation if hasattr(regression_system, 'last_evaluation') else None,
             hyperparameters={
                 "algorithm": request.algorithm_name,

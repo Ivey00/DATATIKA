@@ -8,13 +8,19 @@ from datetime import datetime
 import json
 import matplotlib.pyplot as plt
 import numpy as np
-from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks, Form, Request
+from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks, Form, Request, Depends
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 import asyncio
+import joblib
+from sqlalchemy.orm import Session
+import pandas as pd
 
 from app.core.image_classification import IndustrialVisionApp, DataManager, ModelManager
+from app.db.database import get_db
+from app.db.models import User, TrainedModel
+from app.api.routes.auth import get_current_user
 from app.models.schema import (
     CustomBaseModel,
     VisualizationResponse,
@@ -23,7 +29,10 @@ from app.models.schema import (
     TrainingResponse,
     EvaluationResponse,
     ErrorResponse,
-    convert_to_native_types
+    ModelSaveRequest,
+    ModelSaveResponse,
+    convert_to_native_types,
+    NumpyEncoder
 )
 
 router = APIRouter()
@@ -863,4 +872,123 @@ async def predict_image(file: UploadFile = File(...), model_name: str = Form(...
         return PredictionResponse(
             success=False,
             message=f"Error making prediction: {str(e)}"
+        )
+
+@router.post("/save-model", response_model=ModelSaveResponse)
+async def save_model(request: ModelSaveRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Save a trained model to the database and filesystem
+    """
+    try:
+        if not vision_app.model_manager.trained_models:
+            return ModelSaveResponse(
+                success=False,
+                message="No trained model available to save",
+                model_path="",
+                timestamp=""
+            )
+
+        # Create timestamp for the model path
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        model_filename = f"{request.model_name}_{timestamp}"
+        
+        # Create the save directory if it doesn't exist
+        os.makedirs(request.save_directory, exist_ok=True)
+        model_path = os.path.join(request.save_directory, model_filename)
+
+        # Prepare metadata
+        metadata = {
+            'model_class': request.algorithm_name,
+            'model_type': 'image_classification',  # For database schema
+            'dataset_name': request.dataset_name,
+            'image_dimensions': {
+                'width': vision_app.data_manager.img_width,
+                'height': vision_app.data_manager.img_height,
+                'channels': vision_app.data_manager.channels
+            },
+            'hyperparameters': request.hyperparameters,
+            'metrics': vision_app.last_evaluation if vision_app.last_evaluation else None,
+            'created_at': timestamp,
+            'classes': list(set(vision_app.data_manager.targets)) if vision_app.data_manager.targets else None,
+            'total_samples': len(vision_app.data_manager.targets) if vision_app.data_manager.targets else 0
+        }
+
+        # Save model, preprocessor, and metadata
+        model_path = vision_app.model_manager.save_model(
+            model_path,
+            preprocessor=vision_app.data_manager,  # Save the entire DataManager as preprocessor
+            metadata=metadata
+        )
+
+        if not model_path:
+            return ModelSaveResponse(
+                success=False,
+                message="Failed to save model files",
+                model_path="",
+                timestamp=""
+            )
+
+        # Convert evaluation metrics to JSON-serializable format
+        if vision_app.last_evaluation:
+            metrics = {}
+            for key, value in vision_app.last_evaluation.items():
+                if key == 'confusion_matrix':
+                    metrics[key] = value.tolist() if hasattr(value, 'tolist') else value
+                elif key == 'predictions':
+                    # Skip predictions as they're not needed in the database
+                    continue
+                elif key == 'classification_report':
+                    # Convert classification report to string if it's not already
+                    metrics[key] = str(value) if isinstance(value, str) else value
+                else:
+                    # Use the custom converter for other metrics
+                    metrics[key] = convert_to_native_types(value)
+        else:
+            metrics = {}
+
+        # Convert hyperparameters to JSON-serializable format
+        clean_hyperparameters = {}
+        for key, value in request.hyperparameters.items():
+            if isinstance(value, (np.ndarray, pd.Series, pd.DataFrame)):
+                clean_hyperparameters[key] = convert_to_native_types(value)
+            elif isinstance(value, (np.integer, np.floating)):
+                clean_hyperparameters[key] = value.item()
+            else:
+                clean_hyperparameters[key] = value
+
+        # Ensure metrics are JSON serializable
+        metrics_json = json.loads(json.dumps(metrics, cls=NumpyEncoder))
+        hyperparams_json = json.loads(json.dumps(clean_hyperparameters, cls=NumpyEncoder))
+
+        # Save model metadata to database
+        db_model = TrainedModel(
+            user_id=current_user.id,
+            name=request.model_name,
+            model_type="image_classification",
+            dataset_name=request.dataset_name,
+            model_path=model_path,
+            metrics=metrics_json,
+            hyperparameters=hyperparams_json,
+            created_at=datetime.now()
+        )
+        
+        db.add(db_model)
+        db.commit()
+
+        return ModelSaveResponse(
+            success=True,
+            message=f"Model saved successfully as {os.path.basename(model_path)}",
+            model_path=model_path,
+            timestamp=timestamp
+        )
+
+    except Exception as e:
+        # Rollback the database session in case of error
+        db.rollback()
+        print(f"Error details: {str(e)}")  # Add detailed error logging
+        return ModelSaveResponse(
+            success=False,
+            message=f"Error saving model: {str(e)}",
+            model_path="",
+            timestamp=""
         )

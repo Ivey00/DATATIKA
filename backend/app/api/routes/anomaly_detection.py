@@ -1,5 +1,5 @@
-import base64
 from datetime import datetime
+import base64
 import io
 import os
 import tempfile
@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional
 import json
 from io import BytesIO
 import seaborn as sns
+from sqlalchemy.orm import Session
 
 from app.core.unsupervised_learning import UnsupervisedModelTrainer
 from app.models.schema import (
@@ -28,10 +29,14 @@ from app.models.schema import (
     EvaluationResponse,
     PredictionRequest, PredictionResponse,
     GridSearchRequest, GridSearchResponse,
+    ModelSaveRequest,
     ModelSaveResponse,
     ErrorResponse,
     convert_to_native_types
 )
+from ..routes.auth import get_current_user
+from ...db.database import get_db
+from app.db.models import TrainedModel, User
 
 router = APIRouter()
 
@@ -1008,10 +1013,14 @@ async def save_results(directory: str = "results"):
             timestamp=""
         )
 
-@router.get("/save-model", response_model=ModelSaveResponse)
-async def save_model(directory: str = "models"):
+@router.post("/save-model", response_model=ModelSaveResponse)
+async def save_model(
+    request: ModelSaveRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
-    Save the trained model and preprocessor to disk.
+    Save the trained model and store metadata in database.
     """
     try:
         if anomaly_detection_system.model is None:
@@ -1023,26 +1032,52 @@ async def save_model(directory: str = "models"):
             )
         
         # Create directory if it doesn't exist
-        os.makedirs(directory, exist_ok=True)
+        os.makedirs(request.save_directory, exist_ok=True)
         
-        # Save model
+        # Save model with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = f"{directory}/anomaly_model_{anomaly_detection_system.algorithm_name}_{timestamp}"
+        model_name = f"{request.model_name}_{timestamp}"
+        output_path = os.path.join(request.save_directory, model_name)
         
-        model_path = anomaly_detection_system.save_model(output_path)
+        # Save the model using the UnsupervisedModelTrainer's save_model method
+        model_paths = anomaly_detection_system.save_model(output_path)
         
-        if model_path is None:
+        if model_paths is None:
             return ModelSaveResponse(
                 success=False,
-                message="Error saving model.",
+                message="Error saving model files.",
                 model_path="",
                 timestamp=""
             )
+            
+        model_path, preproc_path = model_paths
+        
+        # Get evaluation metrics if available
+        metrics = {}
+        if hasattr(anomaly_detection_system, 'evaluation_metrics'):
+            metrics = anomaly_detection_system.evaluation_metrics
+        
+        # Create database entry
+        db_model = TrainedModel(
+            user_id=current_user.id,
+            name=request.model_name,
+            model_type="anomaly_detection",
+            dataset_name=request.dataset_name,
+            model_path=model_path,
+            metrics=metrics,
+            hyperparameters={
+                "algorithm": request.algorithm_name,
+                **request.hyperparameters
+            }
+        )
+        
+        db.add(db_model)
+        db.commit()
         
         return ModelSaveResponse(
             success=True,
             message="Model saved successfully",
-            model_path=str(model_path),
+            model_path=model_path,
             timestamp=datetime.now().isoformat()
         )
         

@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 import bcrypt
 import secrets
 from pydantic import BaseModel, EmailStr
 from ...db.database import get_db
-from ...db.models import User, Session as DbSession
+from ...db.models import User, Session as DbSession, TrainedModel
 
 router = APIRouter()
 
@@ -23,6 +23,15 @@ class UserResponse(BaseModel):
     id: int
     name: str
     email: str
+
+class TrainedModelResponse(BaseModel):
+    id: int
+    name: str
+    model_type: str
+    dataset_name: str
+    metrics: dict
+    hyperparameters: dict
+    created_at: datetime
 
 def create_session(db: Session, user_id: int) -> str:
     # Delete any existing sessions for the user
@@ -152,4 +161,46 @@ async def get_current_user_info(
             name=current_user.name,
             email=current_user.email
         )
-    } 
+    }
+
+@router.get("/my-models", response_model=List[TrainedModelResponse])
+async def get_user_models(
+    current_user: Optional[User] = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated"
+        )
+    
+    models = db.query(TrainedModel).filter(
+        TrainedModel.user_id == current_user.id
+    ).order_by(TrainedModel.created_at.desc()).all()
+    
+    return models
+
+@router.get("/my-models/{model_id}", response_model=TrainedModelResponse)
+async def get_model_details(
+    model_id: int,
+    current_user: Optional[User] = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated"
+        )
+    
+    model = db.query(TrainedModel).filter(
+        TrainedModel.id == model_id,
+        TrainedModel.user_id == current_user.id
+    ).first()
+    
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model not found"
+        )
+    
+    return model 

@@ -16,6 +16,7 @@ import { Progress } from "@/components/ui/progress";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useToast } from "@/components/ui/use-toast";
 import PageLayout from "@/components/layout/PageLayout";
+import { useRouter } from "next/navigation";
 
 // Define types for our data structures
 interface ColumnInfo {
@@ -72,12 +73,14 @@ interface ModelSaveRequest {
 // Main component
 export default function NumericalClassifier() {
   const { toast } = useToast();
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState("import");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [modelName, setModelName] = useState("");
   const [saveDirectory, setSaveDirectory] = useState("");
   const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [modelId, setModelId] = useState<number | null>(null);
   
   // State for each step
   const [dataFile, setDataFile] = useState<File | null>(null);
@@ -735,27 +738,33 @@ export default function NumericalClassifier() {
 
     setLoading(true);
     try {
-      const data = await apiRequest('/api/numerical-classifier/save-model', {
+      const request: ModelSaveRequest = {
+        model_name: modelName,
+        dataset_name: dataFile?.name || "unknown",
+        save_directory: saveDirectory,
+        hyperparameters,
+        algorithm_name: selectedAlgorithm
+      };
+
+      const response = await fetch('/api/numerical-classifier/save-model', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          model_name: modelName,
-          dataset_name: dataFile?.name || "unknown_dataset",
-          save_directory: saveDirectory,
-          hyperparameters: hyperparameters,
-          algorithm_name: selectedAlgorithm,
-          metrics: evaluation?.metrics || null
-        })
+        credentials: 'include',
+        body: JSON.stringify(request)
       });
+
+      const data = await response.json();
 
       if (data.success) {
         toast({
           title: "Model saved successfully",
-          description: `Model saved to ${data.model_path}`,
+          description: `Model saved as ${modelName}`
         });
-        setShowSaveDialog(false);
+        setModelId(data.model_id);
+        // Redirect to the prediction page
+        router.push(`/my-models/${data.model_id}/predict`);
       } else {
         toast({
           title: "Error saving model",
@@ -772,6 +781,7 @@ export default function NumericalClassifier() {
       });
     } finally {
       setLoading(false);
+      setShowSaveDialog(false);
     }
   };
   
@@ -1413,7 +1423,18 @@ export default function NumericalClassifier() {
         </Button>
         <div className="space-x-2">
           <Button 
-            onClick={() => setActiveTab("prediction")} 
+            onClick={() => {
+              if (!modelId) {
+                toast({
+                  title: "Save Required",
+                  description: "Please save your model first before making predictions",
+                  variant: "destructive"
+                });
+                setShowSaveDialog(true);
+                return;
+              }
+              router.push(`/my-models/${modelId}/predict`);
+            }} 
             disabled={!evaluation}
             variant="secondary"
           >

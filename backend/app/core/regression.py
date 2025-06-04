@@ -12,6 +12,7 @@ import joblib
 from datetime import datetime
 from sklearn.impute import SimpleImputer
 import warnings
+import os
 warnings.filterwarnings('ignore')
 
 # Import all regressors
@@ -308,11 +309,129 @@ class Regression:
         return comparison_df
 
     def save_model(self, filepath):
-        """Save the trained model"""
+        """
+        Save the trained model, preprocessor, and metadata to disk.
+        
+        Parameters:
+        -----------
+        filepath : str
+            Base filepath to save the model components.
+            
+        Returns:
+        --------
+        tuple
+            Tuple containing (model_path, preprocessor_path, metadata_path).
+        """
         if self.trained_model is None:
             raise ValueError("No trained model to save")
-        joblib.dump(self.trained_model, filepath)
+            
+        if self.preprocessor is None:
+            raise ValueError("No preprocessor available. Please preprocess the data first.")
+
+        # Extract directory and base filename from filepath
+        directory = os.path.dirname(filepath)
+        base_name = os.path.splitext(os.path.basename(filepath))[0]
+
+        # Create directory if it doesn't exist
+        os.makedirs(directory, exist_ok=True)
+
+        # Generate paths for all components
+        model_path = os.path.join(directory, f"{base_name}_model.pkl")
+        preprocessor_path = os.path.join(directory, f"{base_name}_preprocessor.pkl")
+        metadata_path = os.path.join(directory, f"{base_name}_metadata.pkl")
+
+        # Save model
+        with open(model_path, 'wb') as f:
+            joblib.dump(self.trained_model, f)
+
+        # Save preprocessor
+        with open(preprocessor_path, 'wb') as f:
+            joblib.dump(self.preprocessor, f)
+
+        # Get evaluation metrics if available
+        metrics = getattr(self, 'last_evaluation', None)
+
+        # Save metadata
+        metadata = {
+            'model_class': self.model_name,
+            'model_type': 'regression',  # For database schema
+            'features': self.feature_names,
+            'target': self.target_name,
+            'numerical_features': self.numerical_features,
+            'categorical_features': self.categorical_features,
+            'datetime_features': self.datetime_features,
+            'machine_id_column': self.machine_id_column,
+            'hyperparameters': self.hyperparameters,
+            'metrics': metrics,
+            'created_at': datetime.now().strftime("%Y%m%d_%H%M%S")
+        }
+
+        with open(metadata_path, 'wb') as f:
+            joblib.dump(metadata, f)
+
+        print(f"\nModel saved successfully to {model_path}")
+        print(f"Preprocessor saved to {preprocessor_path}")
+        print(f"Metadata saved to {metadata_path}")
+
+        return model_path, preprocessor_path, metadata_path
 
     def load_model(self, filepath):
-        """Load a saved model"""
-        self.trained_model = joblib.load(filepath)
+        """
+        Load a previously saved model, preprocessor, and metadata from disk.
+        
+        Parameters:
+        -----------
+        filepath : str
+            Path to the saved model file. The preprocessor and metadata files
+            should be in the same directory with _preprocessor.pkl and _metadata.pkl suffixes.
+            
+        Returns:
+        --------
+        bool
+            True if the model was loaded successfully, False otherwise.
+        """
+        try:
+            # Extract directory and base filename
+            directory = os.path.dirname(filepath)
+            base_name = os.path.splitext(os.path.basename(filepath))[0]
+            
+            # Remove any existing suffix like _model
+            base_name = base_name.replace('_model', '')
+            
+            # Generate paths for all components
+            model_path = os.path.join(directory, f"{base_name}_model.pkl")
+            preprocessor_path = os.path.join(directory, f"{base_name}_preprocessor.pkl")
+            metadata_path = os.path.join(directory, f"{base_name}_metadata.pkl")
+            
+            # Load model
+            with open(model_path, 'rb') as f:
+                self.trained_model = joblib.load(f)
+            
+            # Load preprocessor
+            with open(preprocessor_path, 'rb') as f:
+                self.preprocessor = joblib.load(f)
+            
+            # Load metadata
+            with open(metadata_path, 'rb') as f:
+                metadata = joblib.load(f)
+            
+            # Update attributes from metadata
+            self.model_name = metadata['model_class']
+            self.feature_names = metadata['features']
+            self.target_name = metadata['target']
+            self.numerical_features = metadata['numerical_features']
+            self.categorical_features = metadata['categorical_features']
+            self.datetime_features = metadata['datetime_features']
+            self.machine_id_column = metadata['machine_id_column']
+            self.hyperparameters = metadata['hyperparameters']
+            
+            print(f"\nModel loaded successfully from {model_path}")
+            print(f"Model type: {metadata['model_class']}")
+            print(f"Features: {self.feature_names}")
+            print(f"Target: {self.target_name}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error loading model: {str(e)}")
+            return False

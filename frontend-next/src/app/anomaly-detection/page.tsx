@@ -62,6 +62,14 @@ interface Prediction {
   [key: string]: any;
 }
 
+interface ModelSaveRequest {
+  model_name: string;
+  dataset_name: string;
+  save_directory: string;
+  hyperparameters: { [key: string]: any };
+  algorithm_name: string;
+}
+
 // Main component
 export default function AnomalyDetection() {
   const { toast } = useToast();
@@ -681,8 +689,8 @@ export default function AnomalyDetection() {
     return value.toString();
   };
   
-  // Function to save model and results
-  const handleSaveResults = async () => {
+  // Function to handle model saving
+  const handleSaveModel = async () => {
     if (!modelName || !saveDirectory) {
       toast({
         title: "Missing information",
@@ -693,36 +701,42 @@ export default function AnomalyDetection() {
     }
 
     setLoading(true);
-    
     try {
-      // Save results with custom path
-      const resultsResponse = await fetch(`/api/anomaly-detection/save-results?directory=${encodeURIComponent(saveDirectory)}`);
-      const resultsData = await resultsResponse.json();
-      
-      if (!resultsData.success) {
-        throw new Error(resultsData.message);
-      }
-      
-      // Save model with custom path
-      const modelResponse = await fetch(`/api/anomaly-detection/save-model?directory=${encodeURIComponent(saveDirectory)}`);
-      const modelData = await modelResponse.json();
-      
-      if (!modelData.success) {
-        throw new Error(modelData.message);
-      }
-      
-      toast({
-        title: "Model and results saved",
-        description: `Results saved to ${resultsData.model_path}`,
+      const response = await fetch('/api/anomaly-detection/save-model', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          model_name: modelName,
+          dataset_name: dataFile?.name || "unknown_dataset",
+          save_directory: saveDirectory,
+          hyperparameters: hyperparameters,
+          algorithm_name: selectedAlgorithm
+        })
       });
 
-      // Close the dialog
-      setShowSaveDialog(false);
+      const data = await response.json();
+
+      if (data.success) {
+        toast({
+          title: "Model saved successfully",
+          description: `Model saved to ${data.model_path}`
+        });
+        setShowSaveDialog(false);
+      } else {
+        toast({
+          title: "Error saving model",
+          description: data.message,
+          variant: "destructive"
+        });
+      }
     } catch (error) {
-      console.error("Error saving model and results:", error);
+      console.error("Error saving model:", error);
       toast({
-        title: "Error saving",
-        description: error instanceof Error ? error.message : "An unexpected error occurred",
+        title: "Error saving model",
+        description: "An unexpected error occurred while saving the model",
         variant: "destructive"
       });
     } finally {
@@ -1404,7 +1418,7 @@ export default function AnomalyDetection() {
                 </Button>
                 <Button
                   variant="default"
-                  onClick={handleSaveResults}
+                  onClick={handleSaveModel}
                   disabled={!modelName || !saveDirectory || loading}
                 >
                   Save
